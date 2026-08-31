@@ -100,11 +100,36 @@ _QUANTITY_CONTEXT = re.compile(
     r"(?:数量|吨数|总数量|重量|净重)[:：]?[\s\S]{0,50}?([\d,]+(?:\.\d{1,3})?)\s*(?:吨|T|t|kg|KG|千克|件|个|张|份|批)?"
 )
 
+# 发票特征标记（用于触发发票专用提取）
+_INVOICE_MARKER = re.compile(r"电子发票|增值税|价税合计|增值税专用发票")
+
 # 销售方：发票/结算单中"销售方信息 名称：XXX公司"
 _SELLER_CONTEXT = re.compile(
     r"(?:销售方|销方|卖方|供货方|供应商)(?:信息)?[\s\S]{0,50}?名称[:：]?\s*"
     r"([\u4e00-\u9fa5A-Za-z0-9（）()]{2,40}?(?:有限公司|有限责任公司|股份有限公司|公司|集团|厂))"
 )
+
+def _despaghettify(text: str) -> str:
+    """合并 OCR 竖排产生的连续单字行（如 购/买/方/信/息 -> 购买方信息）。
+
+    只合并每行恰好 1 个中文字符的连续行，双字及以上不合并，避免误伤正文。
+    """
+    lines = text.splitlines()
+    out: list[str] = []
+    buf = ""
+    for ln in lines:
+        st = ln.strip()
+        if len(st) == 1 and '\u4e00' <= st <= '\u9fa5':
+            buf += st
+        else:
+            if buf:
+                out.append(buf)
+                buf = ""
+            out.append(ln)
+    if buf:
+        out.append(buf)
+    return "\n".join(out)
+
 
 # 中文数字（用于金额金额转数字）
 _CN_NUM = {"零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -142,7 +167,7 @@ class FieldExtractor:
 
     def extract(self, text: str, document_type: str | None = None) -> list[ExtractedField]:
         """从清洗后的文本中提取字段。"""
-        text = text or ""
+        text = _despaghettify(text or "")
         fields: list[ExtractedField] = []
 
         company = self._extract_company(text)
@@ -202,6 +227,15 @@ class FieldExtractor:
         quantity = self._extract_quantity(text)
         if quantity:
             fields.append(quantity)
+
+        # 发票专用提取：文本含发票特征时，用稳定的尾部结构覆盖/补充关键字段
+        if _INVOICE_MARKER.search(text):
+            inv = self._extract_invoice_fields(text)
+            inv_map = {f.name: f for f in inv}
+            for name in ("seller", "quantity", "amount"):
+                if name in inv_map:
+                    fields = [f for f in fields if f.name != name]
+                    fields.append(inv_map[name])
 
         logger.info("字段提取完成：%s", [f"{f.name}={f.value}" for f in fields])
         return fields
@@ -278,6 +312,48 @@ class FieldExtractor:
                 name="material", value=m.group(1).strip(), confidence=0.8, matched=[m.group(0)]
             )
         return None
+
+    def _extract_invoice_fields(self, text: str) -> list[ExtractedField]:
+        """发票专用提取：基于增值税发票 OCR 的稳定尾部结构。
+
+        尾部固定：物料名 -> 税率 -> 单位(吨) -> 金额 -> 税额 -> 单价 -> 数量
+        公司名序列：购买方在前、销售方在后
+        """
+        out: list[ExtractedField] = []
+
+        # 1) 销售方 = 公司名序列最后一个（购买方在前销售方在后）
+        names: list[str] = []
+        for m in _COMPANY_CONTEXT.finditer(text):
+            nm = m.group(1).strip()
+            if len(nm) >= 4 and "公司" in nm:
+                names.append(nm)
+        if not names:
+            for m in _COMPANY_GENERIC.finditer(text):
+                nm = m.group(1).strip()
+                if len(nm) >= 4 and "公司" in nm:
+                    names.append(nm)
+        if names:
+            out.append(ExtractedField("seller", names[-1], 0.85, [names[-1]]))
+
+        # 2) 数量 = "吨"之后的独立小数数值最后一个
+        ton_idx = text.rfind("吨")
+        if ton_idx >= 0:
+            tail = text[ton_idx:]
+            decs = re.findall(r"(\d[\d,]*\.\d{1,4})", tail)
+            if decs:
+                qty = decs[-1].replace(",", "")
+                out.append(ExtractedField("quantity", qty, 0.8, [decs[-1]]))
+
+        # 3) 价税合计金额 = 文本中最大的带小数金额
+        amounts: list[tuple[float, str]] = []
+        for v in re.findall(r"\d[\d,]*\.\d{1,2}", text):
+            num = float(v.replace(",", ""))
+            amounts.append((num, v.replace(",", "")))
+        if amounts:
+            mx = max(amounts, key=lambda x: x[0])
+            out.append(ExtractedField("amount", mx[1], 0.9, [mx[1]]))
+
+        return out
 
     def _extract_seller(self, text: str) -> ExtractedField | None:
         """提取销售方名称（发票/结算单中销售方信息块）。"""
