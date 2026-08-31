@@ -322,27 +322,44 @@ class FieldExtractor:
         out: list[ExtractedField] = []
 
         # 1) 销售方 = 公司名序列最后一个（购买方在前销售方在后）
+        #    排除"开户银行"上下文中的银行名（如 销方开户银行:XX银行 会误当销方）
+        bank_pos = [m.start() for m in re.finditer(r"开户银行", text)]
+
+        def _near_bank(pos: int, span: int = 25) -> bool:
+            return any(abs(pos - b) < span for b in bank_pos)
+
         names: list[str] = []
         for m in _COMPANY_CONTEXT.finditer(text):
             nm = m.group(1).strip()
-            if len(nm) >= 4 and "公司" in nm:
+            if len(nm) >= 4 and "公司" in nm and not _near_bank(m.start()):
                 names.append(nm)
         if not names:
             for m in _COMPANY_GENERIC.finditer(text):
                 nm = m.group(1).strip()
-                if len(nm) >= 4 and "公司" in nm:
+                if len(nm) >= 4 and "公司" in nm and not _near_bank(m.start()):
                     names.append(nm)
         if names:
             out.append(ExtractedField("seller", names[-1], 0.85, [names[-1]]))
 
-        # 2) 数量 = "吨"之后的独立小数数值最后一个
+        # 2) 数量 = "吨"之后单价(3位以上小数)之后的第一个数值
+        #    发票值区顺序：金额 -> 税额 -> 单价(长小数) -> 数量(可整数,如8000吨)
         ton_idx = text.rfind("吨")
         if ton_idx >= 0:
             tail = text[ton_idx:]
-            decs = re.findall(r"(\d[\d,]*\.\d{1,4})", tail)
-            if decs:
-                qty = decs[-1].replace(",", "")
-                out.append(ExtractedField("quantity", qty, 0.8, [decs[-1]]))
+            nums = re.findall(r"\d[\d,]*\.?\d*", tail)
+            unit_idx = None
+            for i, n in enumerate(nums):
+                if re.search(r"\.\d{3,}", n):
+                    unit_idx = i
+            if unit_idx is not None and unit_idx + 1 < len(nums):
+                qty = nums[unit_idx + 1].replace(",", "")
+                if len(qty) <= 10:
+                    out.append(ExtractedField("quantity", qty, 0.8, [nums[unit_idx + 1]]))
+            elif nums:
+                # fallback：无单价时取最后一个小数
+                decs = [n for n in nums if "." in n]
+                if decs:
+                    out.append(ExtractedField("quantity", decs[-1].replace(",", ""), 0.7, [decs[-1]]))
 
         # 3) 价税合计金额 = 文本中最大的带小数金额
         amounts: list[tuple[float, str]] = []
