@@ -16,7 +16,7 @@ SYSTEM_PROMPT = """你是文档字段提取助手。根据文档类型从文本�
 
 _FIELD_HINTS = {
     "合同": ["contract_no", "company", "date", "amount"],
-    "发票": ["invoice_no", "company", "date", "amount", "tax_rate"],
+    "发票": ["invoice_no", "seller", "company", "date", "amount", "quantity", "tax_rate"],
     "银行回单": ["payer", "payee", "date", "amount"],
     "对账单": ["company", "period", "amount"],
     "订单": ["order_no", "company", "date", "amount"],

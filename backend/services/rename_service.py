@@ -30,6 +30,8 @@ VARIABLE_ALIASES: dict[str, list[str]] = {
     "船名": ["vessel", "船名"],
     "物料": ["material", "物料名称", "物料", "品名"],
     "数量": ["quantity", "数量"],
+    "销售方": ["seller", "company", "销售方", "公司"],
+    "购买方": ["buyer", "company", "购买方", "公司"],
 }
 
 # 缺失字段占位

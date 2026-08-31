@@ -67,6 +67,10 @@ _INVOICE_NO = re.compile(
 
 # 金额：带货币标识或"元"，支持千分位/小数
 _AMOUNT_PATTERNS = [
+    re.compile(
+        r"(?:价税合计|含税合计|合计金额|含税金额|总金额)[\s\S]{0,40}?"
+        r"(?:¥|￥|人民币|RMB)?\s*([\d,]+(?:\.\d{1,2})?)"
+    ),
     re.compile(r"(?:人民币|RMB|¥|￥)\s*([\d,]+(?:\.\d{1,2})?)\s*(?:元)?"),
     re.compile(r"(?:金额|价款|货款|总价|交易金额)[:：]?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:元|人民币)?"),
     re.compile(r"([\d,]+(?:\.\d{1,2})?)\s*元"),
@@ -93,7 +97,13 @@ _MATERIAL_TON = re.compile(
 )
 # 数量：上下文锚定 + 单位
 _QUANTITY_CONTEXT = re.compile(
-    r"(?:数量|吨数|总数量|重量|净重)[:：]?\s*([\d,]+(?:\.\d{1,3})?)\s*(?:吨|T|t|kg|KG|千克|件|个|张|份|批)?"
+    r"(?:数量|吨数|总数量|重量|净重)[:：]?[\s\S]{0,50}?([\d,]+(?:\.\d{1,3})?)\s*(?:吨|T|t|kg|KG|千克|件|个|张|份|批)?"
+)
+
+# 销售方：发票/结算单中"销售方信息 名称：XXX公司"
+_SELLER_CONTEXT = re.compile(
+    r"(?:销售方|销方|卖方|供货方|供应商)(?:信息)?[\s\S]{0,50}?名称[:：]?\s*"
+    r"([\u4e00-\u9fa5A-Za-z0-9（）()]{2,40}?(?:有限公司|有限责任公司|股份有限公司|公司|集团|厂))"
 )
 
 # 中文数字（用于金额金额转数字）
@@ -138,6 +148,10 @@ class FieldExtractor:
         company = self._extract_company(text)
         if company:
             fields.append(company)
+
+        seller = self._extract_seller(text)
+        if seller:
+            fields.append(seller)
 
         date = self._extract_date(text)
         if date:
@@ -262,6 +276,15 @@ class FieldExtractor:
         if m:
             return ExtractedField(
                 name="material", value=m.group(1).strip(), confidence=0.8, matched=[m.group(0)]
+            )
+        return None
+
+    def _extract_seller(self, text: str) -> ExtractedField | None:
+        """提取销售方名称（发票/结算单中销售方信息块）。"""
+        m = _SELLER_CONTEXT.search(text)
+        if m:
+            return ExtractedField(
+                name="seller", value=m.group(1).strip(), confidence=0.9, matched=[m.group(0)]
             )
         return None
 
