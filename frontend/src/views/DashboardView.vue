@@ -21,7 +21,7 @@ onMounted(load)
 const cards = [
   { key: 'total_documents', label: '文档总数', color: '#409eff', icon: '📄', to: '/library' },
   { key: 'total_archived', label: '已归档', color: '#67c23a', icon: '📁', to: '/library?status=archived' },
-  { key: 'pending_review', label: '待人工确认', color: '#e6a23c', icon: '📌', to: '/library?status=need_review' },
+  { key: 'pending_review', label: '待人工确认', color: '#e6a23c', icon: '📌', to: '/review' },
   { key: 'today_total', label: '今日新增', color: '#909399', icon: '🗓️', to: '/library' },
 ] as const
 
