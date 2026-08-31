@@ -38,7 +38,7 @@ function typeColor(i: number) {
 <template>
   <div v-loading="loading">
     <el-row :gutter="16">
-      <el-col v-for="c in cards" :key="c.key" :span="6">
+      <el-col v-for="c in cards" :key="c.key" :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card" @click="go(c.to)">
           <div class="stat-icon" :style="{ background: c.color + '1a', color: c.color }">
             {{ c.icon }}
@@ -55,7 +55,7 @@ function typeColor(i: number) {
     </el-row>
 
     <el-row :gutter="16" class="section">
-      <el-col :span="12">
+      <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>
             <div class="card-head">
@@ -80,7 +80,7 @@ function typeColor(i: number) {
         </el-card>
       </el-col>
 
-      <el-col :span="12">
+      <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header><span>系统状态</span></template>
           <el-descriptions :column="1" border>

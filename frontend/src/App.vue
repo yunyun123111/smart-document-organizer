@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 应用根组件：侧边导航 + 主内容区
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAuthStatus, login } from '@/api'
 
@@ -8,6 +8,19 @@ import { getAuthStatus, login } from '@/api'
 const locked = ref(false)
 const password = ref('')
 const logging = ref(false)
+
+// 移动端响应式（<768px 时侧边栏折叠为汉堡菜单）
+const isMobile = ref(false)
+const drawerOpen = ref(false)
+
+function checkMobile() {
+  isMobile.value = window.innerWidth < 768
+  if (!isMobile.value) drawerOpen.value = false
+}
+
+function onMenuSelect() {
+  if (isMobile.value) drawerOpen.value = false
+}
 
 async function checkAuth() {
   try {
@@ -38,7 +51,14 @@ async function doLogin() {
   }
 }
 
-onMounted(checkAuth)
+onMounted(() => {
+  checkAuth()
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile)
+})
 </script>
 
 <template>
@@ -60,7 +80,7 @@ onMounted(checkAuth)
     </div>
   </div>
   <el-container v-else class="layout">
-    <el-aside width="220px" class="aside">
+    <el-aside v-if="!isMobile" width="220px" class="aside">
       <div class="logo">
         <h2>📁 智能文档整理</h2>
       </div>
@@ -89,8 +109,34 @@ onMounted(checkAuth)
       </el-menu>
     </el-aside>
 
+    <!-- 移动端抽屉导航 -->
+    <el-drawer
+      v-if="isMobile"
+      v-model="drawerOpen"
+      direction="ltr"
+      size="72%"
+      :with-header="false"
+      class="mobile-drawer"
+    >
+      <div class="logo drawer-logo">
+        <h2>📁 智能文档整理</h2>
+      </div>
+      <el-menu router :default-active="$route.path" class="menu" @select="onMenuSelect">
+        <el-menu-item index="/"><span>数据看板</span></el-menu-item>
+        <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
+        <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
+        <el-menu-item index="/library"><span>文档库</span></el-menu-item>
+        <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
+        <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
+        <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
+      </el-menu>
+    </el-drawer>
+
     <el-container>
       <el-header class="header">
+        <el-button v-if="isMobile" text class="menu-btn" @click="drawerOpen = true">
+          <span style="font-size: 20px">☰</span>
+        </el-button>
         <span class="header-title">{{ $route.meta.title ?? '智能文档整理工具' }}</span>
       </el-header>
       <el-main class="main">
@@ -172,5 +218,34 @@ onMounted(checkAuth)
 }
 .main {
   background-color: #f5f7fa;
+}
+.menu-btn {
+  margin-right: 4px;
+}
+.drawer-logo {
+  justify-content: flex-start;
+  padding: 0 20px;
+}
+.mobile-drawer :deep(.el-drawer__body) {
+  padding: 0;
+  background-color: #001529;
+}
+.mobile-drawer :deep(.el-menu) {
+  border-right: none;
+  background-color: transparent;
+}
+.mobile-drawer :deep(.el-menu-item) {
+  color: rgba(255, 255, 255, 0.75);
+}
+.mobile-drawer :deep(.el-menu-item.is-active) {
+  color: #fff;
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* 手机端优化：内容区不留大边距、表格可横滑 */
+@media (max-width: 768px) {
+  .main {
+    padding: 10px;
+  }
 }
 </style>
