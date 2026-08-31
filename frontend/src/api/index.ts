@@ -432,3 +432,4 @@ export function updateFilenameRule(id: number, data: Partial<FilenameRule>): Pro
 export function deleteFilenameRule(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/filename-rules/${id}`)
 }
+

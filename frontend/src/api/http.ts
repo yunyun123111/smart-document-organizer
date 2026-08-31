@@ -20,8 +20,20 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (response) => response.data,
   (error) => {
-    const msg = error?.response?.data?.detail || error?.message || '请求失败'
-    ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    const url: string = error?.config?.url || ''
+    const isLogin = url.includes('/auth/login')
+    if (error?.response?.status === 401) {
+      // 登录接口本身 401(密码错误) 不刷新页面；其余接口 401 表示令牌无效
+      // 清掉本地令牌并刷新，让 App 登录掩码重新出现（修复"页面能进但接口全401"死锁）
+      localStorage.removeItem('sdo_access_token')
+      if (!isLogin) {
+        window.location.reload()
+      }
+    }
+    if (!isLogin) {
+      const msg = error?.response?.data?.detail || error?.message || '请求失败'
+      ElMessage.error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    }
     return Promise.reject(error)
   },
 )
