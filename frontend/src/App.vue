@@ -222,30 +222,50 @@ onBeforeUnmount(() => {
 .menu-btn {
   margin-right: 4px;
 }
-.drawer-logo {
-  justify-content: flex-start;
-  padding: 0 20px;
-}
-.mobile-drawer :deep(.el-drawer__body) {
-  padding: 0;
-  background-color: #001529;
-}
-.mobile-drawer :deep(.el-menu) {
-  border-right: none;
-  background-color: transparent;
-}
-.mobile-drawer :deep(.el-menu-item) {
-  color: rgba(255, 255, 255, 0.75);
-}
-.mobile-drawer :deep(.el-menu-item.is-active) {
-  color: #fff;
-  background-color: rgba(255, 255, 255, 0.12);
-}
 
 /* 手机端优化：内容区不留大边距、表格可横滑 */
 @media (max-width: 768px) {
   .main {
     padding: 10px;
   }
+}
+</style>
+
+<!-- 抽屉导航样式：el-drawer 默认 teleport 到 body，scoped 样式失效，须用全局样式 -->
+<style>
+.mobile-drawer .el-drawer__body {
+  padding: 0;
+  background-color: #001529;
+  color: #fff;
+}
+.mobile-drawer .drawer-logo {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 20px;
+}
+.mobile-drawer .drawer-logo h2 {
+  color: #fff;
+  font-size: 16px;
+  margin: 0;
+  white-space: nowrap;
+}
+.mobile-drawer .el-menu {
+  border-right: none;
+  background-color: transparent;
+}
+.mobile-drawer .el-menu-item {
+  color: rgba(255, 255, 255, 0.75);
+  height: 52px;
+  line-height: 52px;
+}
+.mobile-drawer .el-menu-item:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.mobile-drawer .el-menu-item.is-active {
+  color: #fff;
+  background-color: rgba(255, 255, 255, 0.12);
 }
 </style>
