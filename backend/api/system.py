@@ -76,7 +76,17 @@ def dashboard_stats(db: Session = Depends(get_db)):
         or 0
     )
 
+    # 各类型文件数（看板类型分布，未识别统一归为"未识别"）
+    rows = (
+        db.query(Document.document_type, func.count(Document.id))
+        .group_by(Document.document_type)
+        .all()
+    )
+    type_counts = [{"type": (t or "").strip() or "未识别", "count": c} for t, c in rows]
+    type_counts.sort(key=lambda x: -x["count"])
+
     return {
+        "type_counts": type_counts,
         "total_documents": total_documents,
         "total_archived": total_archived,
         "pending_review": pending_review,

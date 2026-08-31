@@ -12,6 +12,7 @@ export interface DashboardStats {
   inbox_root: string
   ai_enabled: boolean
   ocr_enabled: boolean
+  type_counts: { type: string; count: number }[]
 }
 
 export function getDashboardStats(): Promise<DashboardStats> {

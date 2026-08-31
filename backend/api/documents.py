@@ -64,7 +64,10 @@ def list_documents(
     if status:
         query = query.filter(Document.status == status)
     if document_type:
-        query = query.filter(Document.document_type.like(f"%{document_type}%"))
+        if document_type == "未识别":
+            query = query.filter(Document.document_type.in_([None, ""]))
+        else:
+            query = query.filter(Document.document_type.like(f"%{document_type}%"))
     if category:
         sub = (
             db.query(DocumentField.document_id)

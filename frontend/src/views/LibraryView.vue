@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   batchDeleteDocuments,
@@ -16,6 +17,7 @@ import {
 
 const items = ref<DocumentListItem[]>([])
 const loading = ref(false)
+const route = useRoute()
 const keyword = ref('')
 const status = ref('')
 const docType = ref('')
@@ -155,6 +157,11 @@ function fmtSize(n: number): string {
 }
 
 onMounted(async () => {
+  // 支持从数据看板等入口带筛选跳转：/library?status=xx&type=xx
+  const q = route.query
+  if (typeof q.status === 'string') status.value = q.status
+  if (typeof q.type === 'string') docType.value = q.type
+  if (typeof q.category === 'string') category.value = q.category
   await loadFilters()
   await load()
 })
