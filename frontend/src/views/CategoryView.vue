@@ -118,7 +118,7 @@ onMounted(load)
 
 <template>
   <el-row :gutter="16">
-    <el-col :span="8">
+    <el-col :xs="24" :span="8">
       <el-card shadow="never">
         <template #header>
           <div class="head">
@@ -132,6 +132,7 @@ onMounted(load)
           :props="{ label: 'name', children: 'children' }"
           highlight-current
           v-loading="loading"
+          class="cat-tree"
           @node-click="select"
         >
           <template #default="{ data }">
@@ -146,7 +147,7 @@ onMounted(load)
       </el-card>
     </el-col>
 
-    <el-col :span="16">
+    <el-col :xs="24" :span="16">
       <template v-if="selected">
         <el-card shadow="never" class="mb16">
           <template #header>
@@ -287,4 +288,17 @@ onMounted(load)
 .gray { color: #909399; }
 .small { font-size: 12px; }
 .mt8 { margin-top: 8px; }
+.cat-tree {
+  max-height: 70vh;
+  overflow: auto;
+}
+@media (max-width: 768px) {
+  .cat-tree {
+    max-height: 35vh;
+  }
+  .head .el-button {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
 </style>

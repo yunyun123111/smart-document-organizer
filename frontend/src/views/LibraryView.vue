@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useMobile } from '@/composables/useMobile'
 import {
   batchDeleteDocuments,
   deleteDocument,
@@ -29,6 +30,7 @@ const selectedIds = ref<number[]>([])
 const batchLoading = ref(false)
 const drawer = ref(false)
 const detail = ref<DocumentDetail | null>(null)
+const { isMobile } = useMobile()
 
 const statusOptions = [
   { label: '全部状态', value: '' },
@@ -64,6 +66,14 @@ async function loadFilters() {
 
 function onSelectionChange(rows: DocumentListItem[]) {
   selectedIds.value = rows.map((r) => r.id)
+}
+
+function toggleSelect(id: number, checked: boolean) {
+  if (checked) {
+    if (!selectedIds.value.includes(id)) selectedIds.value.push(id)
+  } else {
+    selectedIds.value = selectedIds.value.filter((x) => x !== id)
+  }
 }
 
 async function batchRemove() {
@@ -226,7 +236,36 @@ onMounted(async () => {
       <span v-if="selectedIds.length" class="gray small">已选 {{ selectedIds.length }} 项</span>
     </div>
 
-    <el-table :data="items" v-loading="loading" style="width: 100%" @selection-change="onSelectionChange">
+    <!-- 手机端：卡片列表 -->
+    <div v-if="isMobile" v-loading="loading" class="mobile-list">
+      <div v-for="row in items" :key="row.id" class="doc-card">
+        <div class="doc-card-head">
+          <el-checkbox
+            :model-value="selectedIds.includes(row.id)"
+            @change="(v: any) => toggleSelect(row.id, !!v)"
+          />
+          <span class="doc-name" @click="open(row.id)">{{ row.current_filename }}</span>
+        </div>
+        <div class="doc-meta">
+          <el-tag v-if="row.document_type" size="small" type="primary">{{ row.document_type }}</el-tag>
+          <el-tag v-else size="small" type="info">未识别</el-tag>
+          <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+          <span v-if="row.confidence !== null" class="gray small">{{ (row.confidence * 100).toFixed(0) }}%</span>
+          <span class="gray small">{{ fmtSize(row.file_size) }}</span>
+        </div>
+        <div class="doc-time gray small">{{ row.created_at }}</div>
+        <div class="doc-actions">
+          <el-button size="small" @click="rename(row)">重命名</el-button>
+          <el-button size="small" @click="open(row.id)">详情</el-button>
+          <el-button v-if="row.status === 'archived'" size="small" type="success" @click="openFile(row.id)">打开</el-button>
+          <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+        </div>
+      </div>
+      <el-empty v-if="!loading && items.length === 0" description="暂无文件" />
+    </div>
+
+    <!-- 桌面端：表格 -->
+    <el-table v-else :data="items" v-loading="loading" style="width: 100%" @selection-change="onSelectionChange">
       <el-table-column type="selection" width="45" />
       <el-table-column prop="current_filename" label="当前文件名" min-width="220" show-overflow-tooltip />
       <el-table-column prop="document_type" label="类型" width="110">
@@ -298,6 +337,58 @@ onMounted(async () => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* 手机端卡片列表 */
+.mobile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.doc-card {
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 12px;
+}
+.doc-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.doc-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.doc-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px 24px;
+}
+.doc-time {
+  margin-left: 24px;
+}
+.doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: 24px;
+  margin-top: 6px;
+}
+@media (max-width: 768px) {
+  .head .filters {
+    width: 100%;
+  }
+  .head .filters .el-select,
+  .head .filters .el-input {
+    width: 100% !important;
+    margin-bottom: 4px;
+  }
 }
 .batch-bar {
   display: flex;
