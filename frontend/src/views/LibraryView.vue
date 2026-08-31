@@ -11,6 +11,7 @@ import {
   listDocumentCategories,
   listDocuments,
   listDocumentTypes,
+  renameDocument,
   type DocumentDetail,
   type DocumentListItem,
 } from '@/api'
@@ -107,6 +108,25 @@ async function batchExport() {
 async function open(id: number) {
   drawer.value = true
   detail.value = await getDocument(id)
+}
+
+async function rename(row: DocumentListItem) {
+  const base = row.current_filename.replace(/\.[^.]+$/, '')
+  try {
+    const { value } = await ElMessageBox.prompt('输入新的文件名（不含扩展名）', '重命名', {
+      inputValue: base,
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+    })
+    if (!value || value.trim() === '') return
+    const res = await renameDocument(row.id, value.trim())
+    ElMessage.success(res.changed ? `已重命名为：${res.filename}` : '文件名未变化')
+    await load()
+  } catch (e: any) {
+    if (e !== 'cancel' && !(e && e === 'cancel')) {
+      if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+    }
+  }
 }
 
 async function remove(row: DocumentListItem) {
@@ -229,8 +249,9 @@ onMounted(async () => {
         <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
       </el-table-column>
       <el-table-column prop="created_at" label="时间" width="160" />
-      <el-table-column label="操作" width="180" fixed="right">
+      <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
+          <el-button link type="primary" @click="rename(row)">重命名</el-button>
           <el-button link type="primary" @click="open(row.id)">详情</el-button>
           <el-button v-if="row.status === 'archived'" link type="success" @click="openFile(row.id)">
             打开

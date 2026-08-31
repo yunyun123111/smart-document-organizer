@@ -110,6 +110,13 @@ export function deleteDocument(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/documents/${id}`)
 }
 
+export function renameDocument(
+  id: number,
+  filename: string,
+): Promise<{ ok: boolean; filename: string; changed: boolean }> {
+  return http.post(`/documents/${id}/rename`, { filename })
+}
+
 export function batchDeleteDocuments(
   doc_ids: number[],
 ): Promise<{ ok: boolean; deleted_count: number; missing_count: number }> {

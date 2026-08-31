@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from backend.config import settings
 from backend.database import get_db
 from backend.models import (
     OP_DELETE,
+    OP_RENAME,
     RESULT_OK,
     STATUS_NEED_REVIEW,
     STATUS_PROCESSING,
@@ -26,6 +28,7 @@ from backend.services.duplicate_service import duplicate_service
 from backend.services.operation_service import log_operation
 from backend.services.processing_service import processing_service
 from backend.utils.file_utils import get_file_type, get_mime_type
+from backend.utils.filename_utils import safe_filename, unique_filename
 from backend.utils.hash_utils import sha256_file
 from backend.utils.logger import get_logger
 
@@ -202,6 +205,48 @@ def get_document_file(doc_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="文件已被移动或删除")
     media_type = doc.mime_type or "application/octet-stream"
     return FileResponse(str(path), media_type=media_type, filename=doc.current_filename)
+
+
+class RenameRequest(BaseModel):
+    filename: str
+
+
+@router.post("/{doc_id}/rename")
+def rename_document(doc_id: int, req: RenameRequest, db: Session = Depends(get_db)):
+    """手动重命名文档：移动磁盘文件 + 更新记录 + 审计日志。"""
+    doc = db.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    src = Path(doc.current_path or doc.original_path)
+    if not src.exists():
+        raise HTTPException(status_code=400, detail="磁盘文件不存在，无法重命名")
+    ext = src.suffix
+    base = (req.filename or "").strip().strip('"')
+    if not base:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+    new_name = safe_filename(base, ext)
+    if new_name == src.name:
+        return {"ok": True, "filename": src.name, "path": str(src), "changed": False}
+    target = unique_filename(src.parent, new_name)
+    try:
+        shutil.move(str(src), str(target))
+    except OSError as e:
+        logger.error("重命名失败 %s -> %s: %s", src, target, e)
+        raise HTTPException(status_code=500, detail=f"文件重命名失败: {e}")
+    doc.current_filename = target.name
+    doc.current_path = str(target)
+    log_operation(
+        db,
+        OP_RENAME,
+        old_path=str(src),
+        new_path=str(target),
+        document_id=doc.id,
+        result=RESULT_OK,
+        error_message="手动重命名",
+    )
+    db.commit()
+    logger.info("手动重命名: %s -> %s (doc#%s)", src.name, target.name, doc.id)
+    return {"ok": True, "filename": target.name, "path": str(target), "changed": True}
 
 
 @router.delete("/{doc_id}")
