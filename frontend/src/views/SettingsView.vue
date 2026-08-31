@@ -20,6 +20,8 @@ import {
 
 const form = ref<Settings | null>(null)
 const aiApiKey = ref('')
+const accessPassword = ref('')
+const emailPassword = ref('')
 const saving = ref(false)
 const loaded = ref(false)
 
@@ -58,6 +60,8 @@ async function removeTemplate(t: RecognitionTemplate) {
 async function load() {
   form.value = await getSettings()
   aiApiKey.value = ''
+  accessPassword.value = ''
+  emailPassword.value = ''
   loaded.value = true
   await loadFnRules()
   await loadTemplates()
@@ -89,9 +93,26 @@ async function save() {
     if (aiApiKey.value.trim()) {
       data.ai_api_key = aiApiKey.value.trim()
     }
+    if (accessPassword.value.trim()) {
+      data.access_password = accessPassword.value.trim()
+    }
+    data.email_enabled = form.value.email_enabled
+    data.email_imap_host = form.value.email_imap_host
+    data.email_imap_port = form.value.email_imap_port
+    data.email_user = form.value.email_user
+    data.email_poll_interval = form.value.email_poll_interval
+    if (emailPassword.value.trim()) {
+      data.email_password = emailPassword.value.trim()
+    }
     await updateSettings(data)
     aiApiKey.value = ''
+    accessPassword.value = ''
+    emailPassword.value = ''
     ElMessage.success('设置已保存')
+    // 若刚设置了访问密码，刷新登录态（提示将需要密码）
+    if (data.access_password) {
+      ElMessage.warning('已设置访问密码，下次打开系统需输入密码')
+    }
   } finally {
     saving.value = false
   }
@@ -161,6 +182,51 @@ onMounted(load)
           <div class="gray small">批量整理时扫描此目录中的文件</div>
         </el-form-item>
       </el-form>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
+      <template #header><span>手机接收（局域网网页 + 邮箱自动归档）</span></template>
+
+      <el-divider content-position="left">方式一：局域网网页访问</el-divider>
+      <el-form label-width="120px">
+        <el-form-item label="访问密码">
+          <el-input v-model="accessPassword" type="password" placeholder="留空则不修改；设置后访问需输密码" show-password />
+          <div class="gray small">开放局域网后建议设置密码，防止同一 WiFi 下他人访问系统（含 AI Key 配置）</div>
+        </el-form-item>
+        <el-form-item label="手机访问方式">
+          <div class="gray small">
+            启动脚本已开放局域网（0.0.0.0）。手机与电脑连同一 WiFi，浏览器打开
+            <code>http://电脑IP:8000</code>（启动窗口会显示具体地址），即可上传文件自动归档。
+          </div>
+        </el-form-item>
+      </el-form>
+
+      <el-divider content-position="left">方式二：邮箱接收（不受同一 WiFi 限制，推荐）</el-divider>
+      <el-form label-width="120px">
+        <el-form-item label="启用邮箱接收">
+          <el-switch v-model="form.email_enabled" />
+          <span class="gray small"> 开启后后台每 {{ form.email_poll_interval }} 秒检查一次收件箱</span>
+        </el-form-item>
+        <el-form-item label="IMAP 服务器">
+          <el-input v-model="form.email_imap_host" placeholder="如 imap.qq.com / imap.163.com" />
+        </el-form-item>
+        <el-form-item label="端口">
+          <el-input-number v-model="form.email_imap_port" :min="1" :max="65535" />
+        </el-form-item>
+        <el-form-item label="邮箱账号">
+          <el-input v-model="form.email_user" placeholder="如 yourmail@qq.com" />
+        </el-form-item>
+        <el-form-item label="IMAP 授权码">
+          <el-input v-model="emailPassword" type="password" placeholder="授权码（留空则不修改）" show-password />
+          <div class="gray small">需在邮箱设置中开启 IMAP 并生成授权码（QQ/163 用授权码而非登录密码）</div>
+        </el-form-item>
+        <el-form-item label="轮询间隔（秒）">
+          <el-input-number v-model="form.email_poll_interval" :min="60" :max="3600" :step="30" />
+        </el-form-item>
+      </el-form>
+      <div class="gray small">
+        使用方式：手机把文件作为邮件附件发给 {{ form.email_user || '上述邮箱' }}，系统自动下载到待整理目录并触发识别归档（约在轮询间隔内完成）。
+      </div>
     </el-card>
 
     <el-card shadow="never" class="mb16">

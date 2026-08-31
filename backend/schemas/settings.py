@@ -26,6 +26,16 @@ class SettingsOut(BaseModel):
     conf_keyword_weight: float
     conf_ai_weight: float
     allow_overwrite: bool
+    # 局域网访问
+    host_bind: str
+    access_password_set: bool
+    # 邮箱接收
+    email_enabled: bool
+    email_imap_host: str
+    email_imap_port: int
+    email_user: str
+    email_password_set: bool
+    email_poll_interval: int
 
 
 class SettingsUpdate(BaseModel):
@@ -48,3 +58,13 @@ class SettingsUpdate(BaseModel):
     conf_keyword_weight: Optional[float] = None
     conf_ai_weight: Optional[float] = None
     allow_overwrite: Optional[bool] = None
+    # 局域网访问
+    host_bind: Optional[str] = None
+    access_password: Optional[str] = None
+    # 邮箱接收
+    email_enabled: Optional[bool] = None
+    email_imap_host: Optional[str] = None
+    email_imap_port: Optional[int] = None
+    email_user: Optional[str] = None
+    email_password: Optional[str] = None
+    email_poll_interval: Optional[int] = None

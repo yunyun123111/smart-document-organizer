@@ -33,7 +33,7 @@ if %errorlevel%==0 (
 echo Starting backend service...
 echo (Keep this window open. Close it to stop the system.)
 echo.
-start "SmartDoc-Backend" cmd /k "cd /d "%~dp0" && python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000"
+start "SmartDoc-Backend" cmd /k "cd /d "%~dp0" && python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000"
 
 echo Waiting for service ready...
 ping -n 7 127.0.0.1 >nul
@@ -44,6 +44,9 @@ start "" "http://127.0.0.1:8000"
 echo.
 echo ============================================
 echo    System started:  http://127.0.0.1:8000
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /i "IPv4"') do (
+    echo    局域网访问:   http://%%a:8000   ^(手机同WiFi访问此地址^)
+)
 echo    Close the backend window to stop.
 echo ============================================
 ping -n 4 127.0.0.1 >nul

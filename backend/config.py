@@ -42,6 +42,19 @@ class Settings(BaseSettings):
     # 文件操作
     ALLOW_OVERWRITE: bool = False
 
+    # 局域网访问
+    HOST_BIND: str = "127.0.0.1"  # 127.0.0.1 仅本机；0.0.0.0 开放局域网访问
+    ACCESS_PASSWORD: str = ""  # 访问密码（非空时启用登录校验；开放局域网建议设置）
+
+    # 邮箱接收（手机发邮件附件 -> 自动识别归档）
+    EMAIL_ENABLED: bool = False
+    EMAIL_IMAP_HOST: str = ""
+    EMAIL_IMAP_PORT: int = 993
+    EMAIL_USER: str = ""
+    EMAIL_PASSWORD: str = ""
+    EMAIL_POLL_INTERVAL: int = 120  # 秒
+    EMAIL_SSL: bool = True  # IMAP over SSL（993 端口）
+
     # OCR（P4 阶段接入 PaddleOCR）
     OCR_ENABLED: bool = True
 

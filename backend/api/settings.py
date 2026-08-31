@@ -32,6 +32,14 @@ def get_settings():
         conf_keyword_weight=settings.CONF_KEYWORD_WEIGHT,
         conf_ai_weight=settings.CONF_AI_WEIGHT,
         allow_overwrite=settings.ALLOW_OVERWRITE,
+        host_bind=settings.HOST_BIND,
+        access_password_set=bool(settings.ACCESS_PASSWORD),
+        email_enabled=settings.EMAIL_ENABLED,
+        email_imap_host=settings.EMAIL_IMAP_HOST or "",
+        email_imap_port=settings.EMAIL_IMAP_PORT,
+        email_user=settings.EMAIL_USER or "",
+        email_password_set=bool(settings.EMAIL_PASSWORD),
+        email_poll_interval=settings.EMAIL_POLL_INTERVAL,
     )
 
 

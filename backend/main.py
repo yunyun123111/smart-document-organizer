@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+import hmac
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.api.auth import access_token, router as auth_router
 from backend.api.categories import router as categories_router
 from backend.api.documents import router as documents_router
 from backend.api.filename_rules import router as filename_rules_router
@@ -34,6 +36,16 @@ async def lifespan(app: FastAPI):
     logger = get_logger("main")
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
     init_db()
+    # 邮箱接收轮询（后台线程）
+    email_thread = None
+    try:
+        from backend.services.email_ingest import email_poll_loop
+
+        if settings.EMAIL_ENABLED:
+            email_thread = email_poll_loop(settings.EMAIL_POLL_INTERVAL)
+            logger.info("邮箱接收轮询已启动 (interval=%ss)", settings.EMAIL_POLL_INTERVAL)
+    except Exception:
+        logger.exception("邮箱接收启动失败，本轮不启用")
     yield
     logger.info("=== %s 退出 ===", settings.APP_NAME)
 
@@ -46,6 +58,7 @@ app = FastAPI(
 )
 
 # 注册路由
+app.include_router(auth_router)
 app.include_router(system_router)
 app.include_router(categories_router)
 app.include_router(documents_router)
@@ -55,6 +68,23 @@ app.include_router(review_router)
 app.include_router(rules_router)
 app.include_router(settings_router)
 app.include_router(logs_router)
+
+
+# ---- 访问密码中间件（局域网开放时保护所有 /api 接口）----
+_OPEN_PATHS = ("/api/auth/", "/api/system/health")
+
+
+@app.middleware("http")
+async def access_password_middleware(request: Request, call_next):
+    if settings.ACCESS_PASSWORD and request.url.path.startswith("/api/"):
+        if not any(request.url.path.startswith(prefix) for prefix in _OPEN_PATHS):
+            auth = request.headers.get("Authorization", "")
+            token = auth[7:] if auth.startswith("Bearer ") else ""
+            if not hmac.compare_digest(token, access_token()):
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse(status_code=401, content={"detail": "需要访问密码"})
+    return await call_next(request)
 
 
 # ---- 前端静态托管（生产单进程模式）----

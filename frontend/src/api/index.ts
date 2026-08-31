@@ -355,6 +355,16 @@ export interface Settings {
   conf_keyword_weight: number
   conf_ai_weight: number
   allow_overwrite: boolean
+  host_bind: string
+  access_password_set: boolean
+  access_password?: string
+  email_enabled: boolean
+  email_imap_host: string
+  email_imap_port: number
+  email_user: string
+  email_password_set: boolean
+  email_password?: string
+  email_poll_interval: number
 }
 
 export function getSettings(): Promise<Settings> {
@@ -363,6 +373,19 @@ export function getSettings(): Promise<Settings> {
 
 export function updateSettings(data: Partial<Settings>): Promise<Settings> {
   return http.put('/settings', data)
+}
+
+// ---------- 访问认证（局域网密码保护） ----------
+export interface AuthStatus {
+  password_required: boolean
+}
+
+export function getAuthStatus(): Promise<AuthStatus> {
+  return http.get('/auth/status')
+}
+
+export function login(password: string): Promise<{ ok: boolean; token: string }> {
+  return http.post('/auth/login', { password })
 }
 
 // ---------- 文件名规则（按文件名直接归档） ----------
