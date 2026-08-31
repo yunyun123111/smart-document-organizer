@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.api.auth import access_token, router as auth_router
 from backend.api.categories import router as categories_router
+from backend.api.email import router as email_router
 from backend.api.documents import router as documents_router
 from backend.api.filename_rules import router as filename_rules_router
 from backend.api.logs import router as logs_router
@@ -36,14 +37,11 @@ async def lifespan(app: FastAPI):
     logger = get_logger("main")
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
     init_db()
-    # 邮箱接收轮询（后台线程）
-    email_thread = None
+    # 邮箱接收轮询（后台线程，配置变更后也可动态启停）
     try:
-        from backend.services.email_ingest import email_poll_loop
+        from backend.services.email_ingest import sync_from_settings
 
-        if settings.EMAIL_ENABLED:
-            email_thread = email_poll_loop(settings.EMAIL_POLL_INTERVAL)
-            logger.info("邮箱接收轮询已启动 (interval=%ss)", settings.EMAIL_POLL_INTERVAL)
+        sync_from_settings()
     except Exception:
         logger.exception("邮箱接收启动失败，本轮不启用")
     yield
@@ -59,6 +57,7 @@ app = FastAPI(
 
 # 注册路由
 app.include_router(auth_router)
+app.include_router(email_router)
 app.include_router(system_router)
 app.include_router(categories_router)
 app.include_router(documents_router)

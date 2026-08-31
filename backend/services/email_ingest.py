@@ -6,6 +6,9 @@
     -> 下载附件到 inbox（清洗文件名/防重名/去重）
     -> 登记 Document(pending)
     -> 调用 processing_service.start_job() 自动识别归档
+
+线程生命周期：通过 start_polling / stop_polling 动态启停（配置保存后立即生效，
+无需重启系统）。最近一次收取结果（成功数/错误信息）由 get_status() 暴露给界面。
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime
 from email.header import decode_header
 from pathlib import Path
 
@@ -33,12 +37,18 @@ SUPPORTED_EXTS = {
     ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff",
     ".doc", ".docx", ".xls", ".xlsx", ".csv", ".txt",
 }
-# 排除常见的非业务附件
 _SKIP_NAME_RE = re.compile(r"winmail\.dat$", re.IGNORECASE)
+
+# ---- 最近一次收取状态（供界面展示真实结果/错误） ----
+_status_lock = threading.Lock()
+_status: dict = {"last_check": None, "last_error": None, "last_count": 0, "running": False}
+
+# ---- 轮询线程管理 ----
+_poll_thread: threading.Thread | None = None
+_stop_event: threading.Event | None = None
 
 
 def _decoded(value: str | None) -> str:
-    """解码邮件头/文件名（支持 RFC2047 编码）。"""
     if not value:
         return ""
     try:
@@ -58,7 +68,6 @@ def _decoded(value: str | None) -> str:
 
 
 def _processed_path() -> Path:
-    """已处理邮件 Message-ID 记录文件（用于去重，避免重复下载）。"""
     return Path(settings.TEMP_DIR) / "email_processed.json"
 
 
@@ -87,12 +96,16 @@ def _connect() -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
     cls = imaplib.IMAP4_SSL if settings.EMAIL_SSL else imaplib.IMAP4
     m = cls(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT)
     m.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
-    m.select("INBOX")
+    typ, data = m.select("INBOX")
+    if typ != "OK":
+        # 把服务端原始错误透出，便于定位（如 163 的 Unsafe Login）
+        msg = b" ".join(data).decode("utf-8", "ignore") if data else "SELECT failed"
+        m.logout()
+        raise RuntimeError(f"IMAP 选择收件箱失败：{msg}")
     return m
 
 
 def _save_attachments(msg) -> list[Path]:
-    """把邮件附件保存到 inbox，返回保存路径列表。"""
     saved: list[Path] = []
     inbox = Path(settings.INBOX_ROOT)
     inbox.mkdir(parents=True, exist_ok=True)
@@ -109,7 +122,6 @@ def _save_attachments(msg) -> list[Path]:
         payload = part.get_payload(decode=True)
         if not payload:
             continue
-        # 清洗文件名 + 防重名（保持原名，仅清理非法字符）
         base = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "_", Path(filename).stem).strip(" .")
         if not base:
             base = "邮件附件"
@@ -124,7 +136,6 @@ def _save_attachments(msg) -> list[Path]:
 
 
 def _register_and_process(files: list[Path]) -> int:
-    """登记 Document(pending) 并触发自动整理。返回登记数量。"""
     from backend.services.processing_service import processing_service
     from backend.services.operation_service import log_operation
 
@@ -178,9 +189,19 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _set_status(**kwargs) -> None:
+    with _status_lock:
+        _status.update(kwargs)
+
+
 def poll_once() -> int:
-    """拉取一次邮件附件。返回新增文件数（0 表示无/失败）。"""
+    """拉取一次邮件附件。返回新增文件数（0 表示无/失败）。
+
+    结果与错误写入 _status，供界面展示。
+    """
     if not settings.EMAIL_ENABLED or not settings.EMAIL_IMAP_HOST or not settings.EMAIL_USER:
+        _set_status(last_check=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    last_error="邮箱未启用或未配置", last_count=0)
         return 0
     processed = _load_processed()
     new_files: list[Path] = []
@@ -192,6 +213,8 @@ def poll_once() -> int:
             typ, data = m.search(None, "ALL")
         if typ != "OK":
             m.logout()
+            _set_status(last_check=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        last_error="搜索邮件失败", last_count=0)
             return 0
         for num in data[0].split():
             typ, msg_data = m.fetch(num, "(RFC822)")
@@ -207,35 +230,79 @@ def poll_once() -> int:
             got = _save_attachments(msg)
             new_files.extend(got)
             processed.add(msg_id)
-        # 标记本轮已读（避免重复抓取）
         try:
             m.store("1:*", "+FLAGS", "\\Seen")
         except Exception:
             pass
         m.logout()
-    except Exception:
+    except Exception as e:
         logger.exception("邮箱轮询失败")
+        _set_status(last_check=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    last_error=str(e)[:300], last_count=0)
         return 0
     _save_processed(processed)
     if new_files:
         added = _register_and_process(new_files)
+        _set_status(last_check=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    last_error=None, last_count=added)
         return added
+    _set_status(last_check=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                last_error=None, last_count=0)
     return 0
 
 
-def email_poll_loop(interval: int) -> threading.Thread:
-    """启动后台轮询线程（daemon）。"""
-    def _run():
-        logger.info("邮箱轮询线程开始 (interval=%ss)", interval)
-        while True:
+# ---- 轮询线程生命周期（配置保存后动态启停，无需重启） ----
+def _poll_loop(interval: int, stop_event: threading.Event) -> None:
+    logger.info("邮箱轮询线程开始 (interval=%ss)", interval)
+    _set_status(running=True)
+    try:
+        while not stop_event.is_set():
             try:
                 count = poll_once()
                 if count:
                     logger.info("邮箱接收本轮新增 %s 个文件", count)
             except Exception:
                 logger.exception("邮箱轮询异常")
-            time.sleep(max(30, int(interval) or 120))
+            stop_event.wait(max(30, int(interval) or 120))
+    finally:
+        _set_status(running=False)
+        logger.info("邮箱轮询线程停止")
 
-    t = threading.Thread(target=_run, name="email-ingest", daemon=True)
-    t.start()
-    return t
+
+def start_polling(interval: int | None = None) -> bool:
+    """启动轮询线程（若已在跑则忽略）。"""
+    global _poll_thread, _stop_event
+    if _poll_thread and _poll_thread.is_alive():
+        return True
+    _stop_event = threading.Event()
+    _poll_thread = threading.Thread(
+        target=_poll_loop, args=(interval or settings.EMAIL_POLL_INTERVAL, _stop_event),
+        name="email-ingest", daemon=True,
+    )
+    _poll_thread.start()
+    return True
+
+
+def stop_polling() -> None:
+    global _poll_thread, _stop_event
+    if _stop_event:
+        _stop_event.set()
+    _poll_thread = None
+    _stop_event = None
+
+
+def sync_from_settings() -> bool:
+    """根据当前 settings 启停轮询。返回是否在运行。"""
+    if settings.EMAIL_ENABLED and settings.EMAIL_IMAP_HOST and settings.EMAIL_USER:
+        start_polling()
+        return True
+    stop_polling()
+    return False
+
+
+def get_status() -> dict:
+    with _status_lock:
+        s = dict(_status)
+    s["running"] = bool(_poll_thread and _poll_thread.is_alive())
+    s["enabled"] = settings.EMAIL_ENABLED
+    return s

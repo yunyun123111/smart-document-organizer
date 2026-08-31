@@ -49,4 +49,13 @@ def update_settings(req: SettingsUpdate):
     if data:
         settings.update(**data)
         logger.info("更新系统设置: %s", sorted(data.keys()))
+        # 邮箱配置变更后动态启停轮询线程（无需重启）
+        if any(k in data for k in ("email_enabled", "email_imap_host", "email_user", "email_poll_interval")):
+            try:
+                from backend.services.email_ingest import sync_from_settings
+
+                running = sync_from_settings()
+                logger.info("邮箱轮询已同步: running=%s", running)
+            except Exception:
+                logger.exception("邮箱轮询同步失败")
     return get_settings()

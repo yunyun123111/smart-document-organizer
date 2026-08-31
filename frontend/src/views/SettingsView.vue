@@ -2,9 +2,11 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  checkEmailNow,
   createFilenameRule,
   deleteFilenameRule,
   deleteRecognitionTemplate,
+  getEmailStatus,
   getSettings,
   listCategoriesFlat,
   listFilenameRules,
@@ -34,6 +36,35 @@ const fnLoading = ref(false)
 // 识别模板（同类文件自动归档）
 const templates = ref<RecognitionTemplate[]>([])
 const tplLoading = ref(false)
+
+// 邮箱接收状态
+const emailStatus = ref<{ running: boolean; enabled: boolean; last_check?: string; last_error?: string | null; last_count?: number } | null>(null)
+const emailChecking = ref(false)
+
+async function loadEmailStatus() {
+  try {
+    emailStatus.value = await getEmailStatus()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+async function doCheckEmail() {
+  emailChecking.value = true
+  try {
+    const res = await checkEmailNow()
+    emailStatus.value = res.status
+    if (res.count > 0) {
+      ElMessage.success(`已接收 ${res.count} 个文件并开始识别归档`)
+    } else if (res.status?.last_error) {
+      ElMessage.error(`收取失败：${res.status.last_error}`)
+    } else {
+      ElMessage.info('检查完成，没有新文件')
+    }
+  } finally {
+    emailChecking.value = false
+  }
+}
 
 async function loadTemplates() {
   tplLoading.value = true
@@ -65,6 +96,7 @@ async function load() {
   loaded.value = true
   await loadFnRules()
   await loadTemplates()
+  await loadEmailStatus()
 }
 
 async function save() {
@@ -227,6 +259,26 @@ onMounted(load)
       <div class="gray small">
         使用方式：手机把文件作为邮件附件发给 {{ form.email_user || '上述邮箱' }}，系统自动下载到待整理目录并触发识别归档（约在轮询间隔内完成）。
       </div>
+
+      <el-divider />
+      <div class="email-status">
+        <el-tag :type="emailStatus?.running ? 'success' : 'info'" size="small">
+          {{ emailStatus?.running ? '轮询运行中' : '轮询未运行' }}
+        </el-tag>
+        <el-tag v-if="emailStatus?.last_check" type="info" size="small" class="ml8">
+          最近检查：{{ emailStatus.last_check }}
+        </el-tag>
+        <el-tag v-if="emailStatus?.last_count" type="success" size="small" class="ml8">
+          最近新增：{{ emailStatus.last_count }} 个
+        </el-tag>
+        <div v-if="emailStatus?.last_error" class="email-error">
+          <el-alert type="error" :closable="false" show-icon
+            :title="'收取失败：' + emailStatus.last_error" />
+        </div>
+        <el-button type="primary" plain size="small" class="mt8" :loading="emailChecking" @click="doCheckEmail">
+          立即检查邮箱
+        </el-button>
+      </div>
     </el-card>
 
     <el-card shadow="never" class="mb16">
@@ -376,5 +428,8 @@ onMounted(load)
 .gray { color: #909399; }
 .small { font-size: 12px; }
 code { background: #f0f2f5; padding: 0 4px; border-radius: 3px; }
+.ml8 { margin-left: 8px; }
+.email-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.email-error { flex-basis: 100%; margin-top: 4px; }
 .mr4 { margin-right: 4px; }
 </style>

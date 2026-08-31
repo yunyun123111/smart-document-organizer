@@ -388,6 +388,23 @@ export function login(password: string): Promise<{ ok: boolean; token: string }>
   return http.post('/auth/login', { password })
 }
 
+// ---------- 邮箱接收 ----------
+export interface EmailStatus {
+  running: boolean
+  enabled: boolean
+  last_check?: string
+  last_error?: string | null
+  last_count?: number
+}
+
+export function getEmailStatus(): Promise<EmailStatus> {
+  return http.get('/email/status')
+}
+
+export function checkEmailNow(): Promise<{ ok: boolean; count: number; status: EmailStatus }> {
+  return http.post('/email/check')
+}
+
 // ---------- 文件名规则（按文件名直接归档） ----------
 export interface FilenameRule {
   id: number
