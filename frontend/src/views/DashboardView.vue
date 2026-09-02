@@ -3,16 +3,73 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import {
+  documentFileUrl,
   getDashboardStats,
   getDashboardTrends,
+  listDocuments,
   type DashboardStats,
   type DashboardTrends,
+  type DocumentListItem,
 } from '@/api'
 
 const router = useRouter()
 const stats = ref<DashboardStats | null>(null)
 const trends = ref<DashboardTrends | null>(null)
 const loading = ref(false)
+
+// 类型抽屉：点击类型分布直接看该类型文件
+const typeDrawer = ref(false)
+const typeDrawerTitle = ref('')
+const typeDocs = ref<DocumentListItem[]>([])
+const typeDocsLoading = ref(false)
+
+async function openTypeDocs(t: string) {
+  typeDrawerTitle.value = `${t}（${stats.value?.type_counts.find((x) => x.type === t)?.count ?? 0} 份）`
+  typeDrawer.value = true
+  typeDocsLoading.value = true
+  typeDocs.value = []
+  try {
+    typeDocs.value = await listDocuments({ document_type: t, limit: 200 })
+  } finally {
+    typeDocsLoading.value = false
+  }
+}
+
+function statusTag(s: string) {
+  const map: Record<string, string> = {
+    archived: 'success',
+    need_review: 'warning',
+    pending: 'info',
+    processing: 'primary',
+    duplicate: 'danger',
+    skipped: 'info',
+    failed: 'danger',
+  }
+  return map[s] ?? 'info'
+}
+
+function statusLabel(s: string) {
+  const map: Record<string, string> = {
+    archived: '已归档',
+    need_review: '待确认',
+    pending: '待处理',
+    processing: '处理中',
+    duplicate: '重复',
+    skipped: '已跳过',
+    failed: '失败',
+  }
+  return map[s] ?? s
+}
+
+function openFile(id: number) {
+  window.open(documentFileUrl(id), '_blank')
+}
+
+function fmtSize(n: number): string {
+  if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
+  if (n > 1024) return (n / 1024).toFixed(1) + ' KB'
+  return n + ' B'
+}
 
 const trendChartRef = ref<HTMLDivElement>()
 const rateChartRef = ref<HTMLDivElement>()
@@ -207,7 +264,7 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
               v-for="(t, i) in stats.type_counts"
               :key="t.type"
               class="type-item"
-              @click="go('/library?type=' + encodeURIComponent(t.type))"
+              @click="openTypeDocs(t.type)"
             >
               <span class="type-dot" :style="{ background: typeColor(i) }"></span>
               <span class="type-name">{{ t.type }}</span>
@@ -256,6 +313,29 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
       </el-steps>
     </el-card>
   </div>
+
+  <!-- 类型文件抽屉：点击类型分布直接看该类型文件 -->
+  <el-drawer v-model="typeDrawer" :title="typeDrawerTitle" size="72%">
+    <div v-loading="typeDocsLoading">
+      <el-empty v-if="!typeDocsLoading && typeDocs.length === 0" description="该类型暂无文件" :image-size="80" />
+      <div v-for="d in typeDocs" :key="d.id" class="type-doc-item">
+        <div class="type-doc-info">
+          <div class="type-doc-name">{{ d.current_filename || d.original_filename }}</div>
+          <div class="type-doc-meta">
+            <el-tag size="small" :type="statusTag(d.status)">{{ statusLabel(d.status) }}</el-tag>
+            <span>{{ fmtSize(d.file_size) }}</span>
+            <span v-if="d.confidence != null" class="gray">置信度 {{ Math.round(d.confidence * 100) }}%</span>
+          </div>
+        </div>
+        <div class="type-doc-actions">
+          <el-button size="small" @click="openFile(d.id)">打开</el-button>
+          <el-button size="small" text type="primary" @click="go('/library?type=' + encodeURIComponent(typeDrawerTitle.split('（')[0]))">
+            在文档库中查看
+          </el-button>
+        </div>
+      </div>
+    </div>
+  </el-drawer>
 </template>
 
 <style scoped>
@@ -353,5 +433,42 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
 .type-arrow {
   color: #c0c4cc;
   font-size: 12px;
+}
+.type-doc-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 8px;
+  border-bottom: 1px solid #f0f2f5;
+}
+.type-doc-item:last-child {
+  border-bottom: none;
+}
+.type-doc-info {
+  min-width: 0;
+  flex: 1;
+}
+.type-doc-name {
+  font-size: 13px;
+  color: #303133;
+  word-break: break-all;
+}
+.type-doc-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: #909399;
+  font-size: 12px;
+}
+.type-doc-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.gray {
+  color: #909399;
 }
 </style>
