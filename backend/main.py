@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.auth import access_token, router as auth_router
+from backend.api.backup import router as backup_router
 from backend.api.categories import router as categories_router
 from backend.api.email import router as email_router
 from backend.api.documents import router as documents_router
@@ -66,6 +67,7 @@ app.include_router(processing_router)
 app.include_router(review_router)
 app.include_router(rules_router)
 app.include_router(settings_router)
+app.include_router(backup_router)
 app.include_router(logs_router)
 
 

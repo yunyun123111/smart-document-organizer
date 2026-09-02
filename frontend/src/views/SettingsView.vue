@@ -20,6 +20,12 @@ import {
   type FilenameRule,
   type RecognitionTemplate,
   type Settings,
+  type BackupInfo,
+  createBackup,
+  deleteBackup,
+  downloadBackup,
+  listBackups,
+  restoreBackup,
 } from '@/api'
 
 const form = ref<Settings | null>(null)
@@ -42,6 +48,65 @@ const tplLoading = ref(false)
 // 邮箱接收状态
 const emailStatus = ref<{ running: boolean; enabled: boolean; last_check?: string; last_error?: string | null; last_count?: number } | null>(null)
 const emailChecking = ref(false)
+
+// 备份 / 恢复
+const backups = ref<BackupInfo[]>([])
+const backupLoading = ref(false)
+const backupCreating = ref(false)
+const backupRestoring = ref(false)
+
+async function loadBackups() {
+  backupLoading.value = true
+  try {
+    const res = await listBackups()
+    backups.value = res.backups
+  } finally {
+    backupLoading.value = false
+  }
+}
+
+async function doCreateBackup(includeDocs: boolean) {
+  backupCreating.value = true
+  try {
+    await createBackup(includeDocs)
+    ElMessage.success(includeDocs ? '备份完成（已含归档文档）' : '备份完成')
+    await loadBackups()
+  } finally {
+    backupCreating.value = false
+  }
+}
+
+async function doDeleteBackup(b: BackupInfo) {
+  await ElMessageBox.confirm(`删除备份「${b.filename}」？`, '删除确认', { type: 'warning' })
+  await deleteBackup(b.filename)
+  ElMessage.success('已删除')
+  await loadBackups()
+}
+
+function doDownloadBackup(b: BackupInfo) {
+  downloadBackup(b.filename).catch((e) => ElMessage.error(String(e?.message || e)))
+}
+
+function handleRestoreUpload(f: File) {
+  if (!f) return
+  ElMessageBox.confirm(
+    '恢复会覆盖当前全部数据（文档档案与配置），且不可撤销。确定继续吗？',
+    '高危操作',
+    { type: 'warning', confirmButtonText: '确认恢复', cancelButtonText: '取消' },
+  )
+    .then(async () => {
+      backupRestoring.value = true
+      try {
+        const res = await restoreBackup(f)
+        ElMessage.success(`恢复完成：${res.restored_documents} 份文档`)
+        await loadBackups()
+        await load()
+      } finally {
+        backupRestoring.value = false
+      }
+    })
+    .catch(() => {})
+}
 
 // 文件关联（重定位）
 const relocating = ref(false)
@@ -136,6 +201,7 @@ async function load() {
   await loadTemplates()
   await loadEmailStatus()
   await loadRelocateStatus()
+  await loadBackups()
 }
 
 async function save() {
@@ -362,6 +428,47 @@ onMounted(load)
           </el-table>
         </div>
       </div>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
+      <template #header><span>备份与恢复</span></template>
+      <div class="gray small mb8">
+        备份包含数据库（文档档案/字段/日志/模板/规则）与配置（.env）。可勾选同时备份归档文档。恢复会覆盖当前数据，请谨慎操作。
+      </div>
+      <div class="mb16">
+        <el-button type="primary" :loading="backupCreating" @click="doCreateBackup(false)">创建备份（仅数据+配置）</el-button>
+        <el-button :loading="backupCreating" @click="doCreateBackup(true)">创建备份（含归档文档）</el-button>
+        <el-upload
+          :show-file-list="false"
+          :auto-upload="false"
+          accept=".zip"
+          :on-change="(f: any) => { if (f?.raw) handleRestoreUpload(f.raw as File) }"
+          style="display: inline-block; margin-left: 12px"
+        >
+          <el-button type="danger" plain :loading="backupRestoring">从备份恢复…</el-button>
+        </el-upload>
+      </div>
+      <el-table :data="backups" size="small" v-loading="backupLoading" empty-text="暂无备份" style="width: 100%">
+        <el-table-column prop="filename" label="备份文件" min-width="220" show-overflow-tooltip />
+        <el-table-column label="创建时间" min-width="160">
+          <template #default="{ row }">{{ new Date(row.created_at).toLocaleString() }}</template>
+        </el-table-column>
+        <el-table-column label="大小" width="100">
+          <template #default="{ row }">{{ (row.size / 1024 / 1024).toFixed(2) }} MB</template>
+        </el-table-column>
+        <el-table-column label="文档数" width="90">
+          <template #default="{ row }">{{ row.documents_count }}</template>
+        </el-table-column>
+        <el-table-column label="含文档" width="90">
+          <template #default="{ row }">{{ row.include_documents ? '是' : '否' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="140">
+          <template #default="{ row }">
+            <el-button link type="primary" size="small" @click="doDownloadBackup(row)">下载</el-button>
+            <el-button link type="danger" size="small" @click="doDeleteBackup(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <el-card shadow="never" class="mb16">

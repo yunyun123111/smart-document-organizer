@@ -543,3 +543,48 @@ export interface ReviewGroup {
 export function listReviewGroups(): Promise<ReviewGroup[]> {
   return http.get('/review/groups')
 }
+
+
+// ---------- 备份 / 恢复 ----------
+export interface BackupInfo {
+  filename: string
+  size: number
+  created_at: string
+  documents_count: number
+  include_documents: boolean
+}
+
+export function listBackups(): Promise<{ ok: boolean; backups: BackupInfo[] }> {
+  return http.get('/backup/list')
+}
+
+export function createBackup(includeDocuments = false): Promise<{ ok: boolean } & BackupInfo> {
+  return http.post('/backup/create', { include_documents: includeDocuments })
+}
+
+export function deleteBackup(filename: string): Promise<{ ok: boolean }> {
+  return http.delete(`/backup/${encodeURIComponent(filename)}`)
+}
+
+// 下载备份：走带 token 的 blob 下载（与文档打开一致，避免 401）
+export async function downloadBackup(filename: string): Promise<void> {
+  const token = localStorage.getItem('sdo_access_token') || ''
+  const res = await fetch(`/api/backup/download/${encodeURIComponent(filename)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`下载失败: ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// 恢复备份：上传 zip（高风险，会覆盖当前数据库）
+export function restoreBackup(file: File): Promise<{ ok: boolean; restored_documents: number }> {
+  const fd = new FormData()
+  fd.append('file', file)
+  return http.post('/backup/restore', fd)
+}
