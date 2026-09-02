@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   approveReview,
   batchApprove,
+  batchDeleteDocuments,
   getReviewDetail,
   listReview,
   skipReview,
@@ -53,6 +54,30 @@ async function batchConfirm() {
       ElMessageBox.alert(`失败原因：${errs.join('；')}`, '部分归档失败', { type: 'warning' })
     }
     drawer.value = false
+    await load()
+  } finally {
+    batchSaving.value = false
+  }
+}
+
+async function batchRemove() {
+  if (selectedIds.value.length === 0) {
+    ElMessage.warning('请先勾选要移除的文件')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将从系统移除 ${selectedIds.value.length} 个文件（记录和磁盘文件一并删除，不可恢复），确定？`,
+      '批量移除',
+      { type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  batchSaving.value = true
+  try {
+    const res = await batchDeleteDocuments(selectedIds.value)
+    ElMessage.success(`已移除 ${res.deleted_count} 个文件`)
     await load()
   } finally {
     batchSaving.value = false
@@ -136,6 +161,13 @@ onMounted(load)
               :loading="batchSaving"
               @click="batchConfirm"
             >批量确认归档（{{ selectedIds.length }}）</el-button>
+            <el-button
+              type="danger"
+              size="small"
+              :disabled="selectedIds.length === 0"
+              :loading="batchSaving"
+              @click="batchRemove"
+            >批量移除（{{ selectedIds.length }}）</el-button>
             <el-button size="small" @click="load">刷新</el-button>
           </div>
         </div>
