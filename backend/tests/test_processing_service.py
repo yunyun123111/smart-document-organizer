@@ -183,3 +183,69 @@ class TestProcessing:
         assert processing_service.cancel_job(job.id) is True
         done = _wait_job(job.id, {JOB_CANCELLED, JOB_COMPLETED})
         assert done.status == JOB_CANCELLED
+
+
+class TestP21Performance:
+    """P2-1 大目录整理性能：扫描过滤 / 防并发 / 失败重试去重。"""
+
+    def test_skip_hidden_and_temp_files(self, env):
+        """隐藏文件/Office 临时文件不计入任务（避免误扫与浪费）。"""
+        (Path(settings.inbox_root) / ".hidden.txt").write_text(CONTRACT_TXT, encoding="utf-8")
+        (Path(settings.inbox_root) / "~$temp.txt").write_text(CONTRACT_TXT, encoding="utf-8")
+        (Path(settings.inbox_root) / "SJWLXS（DD）-2026-YC0002.txt").write_text(CONTRACT_TXT, encoding="utf-8")
+
+        job = processing_service.start_job()
+        done = _wait_job(job.id, {JOB_COMPLETED})
+        assert done.total_files == 1  # 只算真实文件
+        assert done.success_count == 1
+        assert done.processed_files == 1
+        docs = _docs()
+        assert len(docs) == 1
+
+    def test_start_job_rejects_concurrent(self, env, monkeypatch):
+        """已有任务运行时再开始 → 拒绝（避免并发重复识别浪费 token/OCR）。"""
+        src = Path(settings.inbox_root) / "慢文件.txt"
+        src.write_text(CONTRACT_TXT, encoding="utf-8")
+        orig_analyze = ClassifierService.analyze
+
+        def slow(self_, *a, **k):
+            time.sleep(3)
+            return orig_analyze(self_, *a, **k)
+
+        monkeypatch.setattr(ClassifierService, "analyze", slow)
+        job1 = processing_service.start_job()
+        assert processing_service._has_running() is True
+        with pytest.raises(RuntimeError):
+            processing_service.start_job()
+        # 清理：取消慢任务并等待终态，避免影响后续用例
+        processing_service.cancel_job(job1.id)
+        _wait_job(job1.id, {JOB_CANCELLED, JOB_COMPLETED})
+
+    def test_retry_failed_reuses_record(self, env, monkeypatch):
+        """失败文件重试：复用原记录，不重复建档；恢复后归档成功。"""
+        # 文件名带 SJWLXS 前缀 → 命中文件名规则直接自动归档（success），
+        # 与内容置信度审核（review）区分开，聚焦验证"复用记录不重复建档"。
+        src = Path(settings.inbox_root) / "SJWLXS（DD）-2026-YC0003.txt"
+        src.write_text(CONTRACT_TXT, encoding="utf-8")
+        orig_analyze = ClassifierService.analyze
+
+        def boom(self_, *a, **k):
+            raise RuntimeError("模拟识别故障")
+
+        monkeypatch.setattr(ClassifierService, "analyze", boom)
+        job1 = processing_service.start_job()
+        done1 = _wait_job(job1.id, {JOB_COMPLETED})
+        assert done1.failed_count == 1
+        assert len(_docs()) == 1
+
+        # 恢复识别能力 → 重试失败文件
+        monkeypatch.setattr(ClassifierService, "analyze", orig_analyze)
+        job2 = processing_service.retry_failed()
+        assert job2.total_files == 1
+        done2 = _wait_job(job2.id, {JOB_COMPLETED})
+        assert done2.success_count == 1
+        assert done2.failed_count == 0
+
+        docs = _docs()
+        assert len(docs) == 1  # 复用原记录，不重复建档
+        assert docs[0].status == STATUS_ARCHIVED

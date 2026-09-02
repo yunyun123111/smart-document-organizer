@@ -6,6 +6,7 @@ import {
   cancelJob,
   getJob,
   listDocuments,
+  retryFailed as retryFailedApi,
   startProcessing,
   uploadDocument,
   type ProcessingJob,
@@ -15,6 +16,7 @@ const uploading = ref(false)
 const running = ref<ProcessingJob | null>(null)
 const inboxFiles = ref<any[]>([])
 const pollTimer = ref<number | null>(null)
+const lastFailed = ref(0)
 
 // 扫描收件箱已有文件（pending 状态）
 async function loadInbox() {
@@ -64,10 +66,27 @@ function isFinished(job: ProcessingJob): boolean {
 async function finish(job: ProcessingJob) {
   stopPoll()
   running.value = null
+  lastFailed.value = job.failed_count
   ElMessage.success(
     `整理完成：成功 ${job.success_count} / 待审核 ${job.review_count} / 重复 ${job.duplicate_count} / 失败 ${job.failed_count}`,
   )
   await loadInbox()
+}
+
+async function retryFailedFiles() {
+  if (running.value) return
+  try {
+    const job = await retryFailedApi()
+    running.value = job
+    ElMessage.success(`已开始重试失败文件（${job.total_files} 个）`)
+    if (isFinished(job)) {
+      finish(job)
+      return
+    }
+    poll()
+  } catch {
+    /* 错误已在拦截器提示 */
+  }
 }
 
 async function stop() {
@@ -141,6 +160,9 @@ onUnmounted(stopPoll)
         ▶ 开始整理（收件箱内 {{ inboxFiles.length }} 个文件）
       </el-button>
       <el-button v-if="running" type="danger" plain @click="stop">停止</el-button>
+      <el-button v-if="lastFailed > 0 && !running" type="warning" plain @click="retryFailedFiles">
+        重试失败（{{ lastFailed }} 个）
+      </el-button>
     </div>
 
     <!-- 任务进度 -->

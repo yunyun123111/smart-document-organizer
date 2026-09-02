@@ -117,6 +117,10 @@ export function cancelJob(jobId: number): Promise<{ ok: boolean }> {
   return http.post(`/processing/${jobId}/cancel`)
 }
 
+export function retryFailed(): Promise<ProcessingJob> {
+  return http.post('/processing/retry-failed')
+}
+
 // ---------- 文档库 ----------
 export interface DocumentListItem {
   id: number

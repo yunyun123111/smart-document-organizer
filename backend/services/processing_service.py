@@ -56,14 +56,19 @@ class ProcessingService:
     # ---------- 任务控制 ----------
     def start_job(self, source_dir: str | None = None) -> ProcessingJob:
         """创建任务并开始后台处理。返回任务。"""
+        if self._has_running():
+            raise RuntimeError("已有整理任务正在运行，请等待其完成后再开始")
         src = Path(source_dir) if source_dir else settings.inbox_root
         src = src.resolve()
         if not src.exists():
             raise FileNotFoundError(f"待整理目录不存在: {src}")
 
+        # 跳过隐藏文件（.xxx）与 Office 临时文件（~$xxx），避免误扫与浪费
         files = [
             p for p in src.iterdir()
-            if p.is_file() and get_file_type(p) != "unknown"
+            if p.is_file()
+            and not p.name.startswith((".", "~$"))
+            and get_file_type(p) != "unknown"
         ]
 
         # 只跳过已定性的文件（人工审核中 / 已归档 / 重复），
@@ -87,6 +92,15 @@ class ProcessingService:
                 if str(p.resolve()) not in skip and str(p) not in skip
             ]
 
+        return self._launch(files, src)
+
+    def _has_running(self) -> bool:
+        """是否有正在运行的任务（含刚启动未结束的）。"""
+        with self._lock:
+            return any(e is not None and not e.is_set() for e in self._jobs.values())
+
+    def _launch(self, files: list[Path], src: Path) -> ProcessingJob:
+        """创建任务并后台启动处理线程；无文件则立即完成。"""
         with SessionLocal() as db:
             job = ProcessingJob(
                 status=JOB_RUNNING,
@@ -104,16 +118,40 @@ class ProcessingService:
             self._jobs[job_id] = cancel_event
 
         if files:
-            # 后台线程处理
             threading.Thread(
                 target=self._run_job, args=(job_id, src, files, cancel_event), daemon=True
             ).start()
         else:
-            # 无文件：立即完成
             self._finish_job(job_id, cancel_event)
 
         logger.info("批量整理任务 #%s 启动，共 %d 个文件", job_id, len(files))
         return job
+
+    def retry_failed(self) -> ProcessingJob:
+        """重新处理收件箱中失败过的文件（复用原记录，不重复建档）。
+
+        供前端「重试失败」入口使用；普通「开始整理」也会自动重试失败项
+        （failed 不在跳过集合中），本方法仅把范围限定在失败文件上。
+        """
+        if self._has_running():
+            raise RuntimeError("已有整理任务正在运行，请等待其完成后再重试")
+        src = Path(settings.inbox_root).resolve()
+        files: list[Path] = []
+        if src.exists():
+            with SessionLocal() as db:
+                rows = db.query(Document.original_path).filter(
+                    Document.status == STATUS_FAILED
+                ).all()
+            for (p,) in rows:
+                if not p:
+                    continue
+                fp = Path(p)
+                if fp.is_file():
+                    files.append(fp)
+        if not files:
+            return self._launch([], src)
+        logger.info("重试失败文件 %d 个", len(files))
+        return self._launch(files, src)
 
     def cancel_job(self, job_id: int) -> bool:
         """请求取消任务。"""
@@ -159,14 +197,20 @@ class ProcessingService:
         logger.info("批量任务 #%s 结束: %s", job_id, "已取消" if cancel_event.is_set() else "完成")
 
     def _process_one(self, job_id: int, file_path: Path, cancel_event: threading.Event) -> None:
-        """处理单个文件：登记 → 识别 → 决策。"""
+        """处理单个文件：登记 → 识别 → 决策。
+
+        每个文件只做一次计数提交（processed + 结果类别合并），
+        减少 SQLite 写放大，大目录处理更高效。
+        """
         if cancel_event.is_set():
             return
+        # outcome 记录本文件最终结果类别，finally 里一次性 bump
+        outcome = {"success": False, "review": False, "failed": False, "duplicate": False}
         with SessionLocal() as db:
             # ctx 用于在异常时拿回已登记文档，把状态落为 failed（避免僵尸 pending/processing）
             ctx: dict = {}
             try:
-                self._handle_file(db, job_id, file_path, ctx)
+                self._handle_file(db, job_id, file_path, ctx, outcome)
             except Exception as e:  # noqa: BLE001
                 logger.error("文件处理失败 %s: %s", file_path, e)
                 # 回滚失败事务，否则 session 处于 PendingRollback 状态，
@@ -177,12 +221,16 @@ class ProcessingService:
                     logger.exception("回滚失败 %s", file_path)
                 try:
                     self._mark_failed(db, ctx.get("doc_id"))
-                    self._bump_job(db, job_id, failed=True)
+                    outcome["failed"] = True
                 except Exception:  # noqa: BLE001
                     logger.exception("更新失败计数出错 %s", file_path)
             finally:
                 try:
-                    self._bump_job(db, job_id, processed=True)
+                    self._bump_job(
+                        db, job_id, processed=True,
+                        success=outcome["success"], review=outcome["review"],
+                        failed=outcome["failed"], duplicate=outcome["duplicate"],
+                    )
                 except Exception:  # noqa: BLE001
                     logger.exception("更新处理计数出错 %s", file_path)
 
@@ -198,9 +246,11 @@ class ProcessingService:
         db.commit()
 
     def _handle_file(
-        self, db: Session, job_id: int, file_path: Path, ctx: dict | None = None
+        self, db: Session, job_id: int, file_path: Path,
+        ctx: dict | None = None, outcome: dict | None = None,
     ) -> None:
         ctx = ctx if ctx is not None else {}
+        outcome = outcome if outcome is not None else {}
         file_type = get_file_type(file_path)
         file_hash = sha256_file(file_path)
 
@@ -222,7 +272,7 @@ class ProcessingService:
             db.commit()
             log_operation(db, OP_IMPORT, old_path=str(file_path), new_path=str(file_path),
                           document_id=doc.id, job_id=job_id)
-            self._bump_job(db, job_id, duplicate=True)
+            outcome["duplicate"] = True
             logger.info("重复文件: %s", file_path.name)
             return
 
@@ -231,7 +281,7 @@ class ProcessingService:
             db.query(Document)
             .filter(
                 Document.original_path == str(file_path),
-                Document.status.in_((STATUS_PENDING, STATUS_PROCESSING)),
+                Document.status.in_((STATUS_PENDING, STATUS_PROCESSING, STATUS_FAILED)),
             )
             .order_by(Document.id.desc())
             .first()
@@ -277,13 +327,13 @@ class ProcessingService:
             # 无法判断 → 人工审核
             doc.status = STATUS_NEED_REVIEW
             db.commit()
-            self._bump_job(db, job_id, review=True)
+            outcome["review"] = True
             return
 
         if result.decision == "review":
             doc.status = STATUS_NEED_REVIEW
             db.commit()
-            self._bump_job(db, job_id, review=True)
+            outcome["review"] = True
             return
 
         # auto → 直接归档
@@ -298,16 +348,16 @@ class ProcessingService:
         )
         if ar.success:
             # archive_service 已把 doc 标记为 archived
-            self._bump_job(db, job_id, success=True)
+            outcome["success"] = True
         else:
             if ar.duplicate:
                 doc.status = STATUS_DUPLICATE
                 db.commit()
-                self._bump_job(db, job_id, duplicate=True)
+                outcome["duplicate"] = True
             else:
                 doc.status = STATUS_NEED_REVIEW
                 db.commit()
-                self._bump_job(db, job_id, review=True)
+                outcome["review"] = True
 
     def _save_fields(self, db: Session, doc: Document, result) -> None:
         """保存识别字段（含建议分类）。"""

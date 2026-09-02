@@ -24,6 +24,16 @@ def start_processing(req: ProcessingStartRequest, db: Session = Depends(get_db))
     return db.get(ProcessingJob, job.id)
 
 
+@router.post("/retry-failed", response_model=ProcessingJobOut)
+def retry_failed(db: Session = Depends(get_db)):
+    """重新处理收件箱中失败过的文件（复用原记录，不重复建档）。"""
+    try:
+        job = processing_service.retry_failed()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return db.get(ProcessingJob, job.id)
+
+
 @router.get("/{job_id}", response_model=ProcessingJobOut)
 def get_job(job_id: int, db: Session = Depends(get_db)):
     job = db.get(ProcessingJob, job_id)
