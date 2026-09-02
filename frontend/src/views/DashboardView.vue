@@ -102,15 +102,16 @@ function renderTrendChart() {
   const dates = d.map((x) => x.date.slice(5))
   trendChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['新增', '归档', '待确认', '失败'] },
-    grid: { left: 40, right: 16, top: 36, bottom: 28 },
+    legend: { orient: 'vertical', right: 8, top: 'middle' },
+    grid: { left: 40, right: 96, top: 30, bottom: 28 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', minInterval: 1 },
     series: [
-      { name: '新增', type: 'bar', data: d.map((x) => x.new), itemStyle: { color: '#409eff' } },
-      { name: '归档', type: 'bar', data: d.map((x) => x.archived), itemStyle: { color: '#67c23a' } },
-      { name: '待确认', type: 'bar', data: d.map((x) => x.need_review), itemStyle: { color: '#e6a23c' } },
-      { name: '失败', type: 'bar', data: d.map((x) => x.failed), itemStyle: { color: '#f56c6c' } },
+      // 堆叠柱：柱高 = 当日新增总量；新增折线叠加显示总量趋势
+      { name: '新增', type: 'line', data: d.map((x) => x.new), itemStyle: { color: '#409eff' }, smooth: true, symbol: 'circle', symbolSize: 6 },
+      { name: '归档', type: 'bar', stack: 'total', data: d.map((x) => x.archived), itemStyle: { color: '#67c23a' }, barWidth: 20 },
+      { name: '待确认', type: 'bar', stack: 'total', data: d.map((x) => x.need_review), itemStyle: { color: '#e6a23c' } },
+      { name: '失败', type: 'bar', stack: 'total', data: d.map((x) => x.failed), itemStyle: { color: '#f56c6c' } },
     ],
   })
 }
@@ -126,8 +127,8 @@ function renderRateChart() {
   const ocrFail = o.map((x) => (x.fail_rate == null ? null : +(x.fail_rate * 100).toFixed(1)))
   rateChart.setOption({
     tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '—' : v + '%') },
-    legend: { data: ['识别成功率', 'OCR 失败率'] },
-    grid: { left: 40, right: 16, top: 36, bottom: 28 },
+    legend: { orient: 'vertical', right: 8, top: 'middle' },
+    grid: { left: 40, right: 96, top: 30, bottom: 28 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', axisLabel: { formatter: '{value}%' }, max: 100 },
     series: [
