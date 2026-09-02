@@ -50,6 +50,7 @@ class AnalysisResult:
     field_values: dict = field(default_factory=dict)   # 字段名 -> 值（纯值，供重命名）
     rule_matches: list = field(default_factory=list)
     ai_result: dict | None = None
+    field_conflicts: list = field(default_factory=list)  # 字段冲突记录
     confidence: object | None = None                    # ConfidenceResult
     decision: str = ""
     suggested_category: str = ""                        # 分类 path
@@ -65,6 +66,7 @@ class AnalysisResult:
             "document_type": self.document_type,
             "title": self.title,
             "fields": self.field_values,
+            "field_conflicts": self.field_conflicts,
             "decision": self.decision,
             "confidence": conf,
             "suggested_category": self.suggested_category,
@@ -123,11 +125,12 @@ class ClassifierService:
             best: RuleMatch | None = matches[0] if matches else None
             rule_conf = rule_confidence(best) if best else 0.0
 
-            # 4. 字段提取（规则/正则）
-            extracted = field_extractor.extract(text)
+            # 4. 字段提取（多规则并行引擎：正则+关键词+模板+文件名补全）
+            extracted = field_extractor.extract(text, filename=path.name)
+            result.field_conflicts = [c.__dict__ for c in field_extractor.last_conflicts]
             fields_dict: dict[str, tuple] = {}
             for f in extracted:
-                fields_dict[f.name] = (f.value, f.confidence, "RULE")
+                fields_dict[f.name] = (f.value, f.confidence, f.source or "RULE")
             result.fields = fields_dict
             result.field_values = {k: v[0] for k, v in fields_dict.items()}
             field_conf = (
