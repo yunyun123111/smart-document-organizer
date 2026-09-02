@@ -7,6 +7,7 @@ import {
   getDashboardStats,
   getDashboardTrends,
   listDocuments,
+  type DashboardAlert,
   type DashboardStats,
   type DashboardTrends,
   type DocumentListItem,
@@ -159,6 +160,7 @@ function onResize() {
 }
 
 onMounted(() => {
+  loadDismissed()
   load()
   window.addEventListener('resize', onResize)
 })
@@ -190,20 +192,54 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
   if (level === 'warning') return 'warning'
   return 'info'
 }
+
+// ---- 异常提醒手动关闭（本地持久化，刷新不复活）----
+const DISMISS_KEY = 'sdo_dismissed_alerts'
+const dismissed = ref<string[]>([])
+function alertKey(a: DashboardAlert) {
+  return `${a.kind}|${a.type ?? ''}|${a.message}`
+}
+function loadDismissed() {
+  try {
+    dismissed.value = JSON.parse(localStorage.getItem(DISMISS_KEY) || '[]')
+  } catch {
+    dismissed.value = []
+  }
+}
+function visibleAlerts(): DashboardAlert[] {
+  if (!trends.value) return []
+  return trends.value.alerts.filter((a) => !dismissed.value.includes(alertKey(a)))
+}
+function dismissAlert(a: DashboardAlert) {
+  if (!dismissed.value.includes(alertKey(a))) dismissed.value.push(alertKey(a))
+  localStorage.setItem(DISMISS_KEY, JSON.stringify(dismissed.value))
+}
+function restoreAlerts() {
+  dismissed.value = []
+  localStorage.setItem(DISMISS_KEY, '[]')
+}
 </script>
 
 <template>
   <div v-loading="loading">
     <!-- 异常提醒 -->
-    <el-card v-if="trends && trends.alerts.length" shadow="never" class="section alert-card">
-      <template #header><span>⚠️ 异常提醒</span></template>
+    <el-card v-if="visibleAlerts().length || dismissed.length" shadow="never" class="section alert-card">
+      <template #header>
+        <div class="card-head">
+          <span>⚠️ 异常提醒</span>
+          <el-link v-if="dismissed.length" type="info" :underline="false" class="restore-link" @click="restoreAlerts">
+            恢复已关闭提醒（{{ dismissed.length }}）
+          </el-link>
+        </div>
+      </template>
       <el-alert
-        v-for="(a, i) in trends.alerts"
-        :key="i"
+        v-for="a in visibleAlerts()"
+        :key="alertKey(a)"
         :type="alertType(a.level)"
-        :closable="false"
         show-icon
+        closable
         class="alert-item"
+        @close="dismissAlert(a)"
       >
         <template #title>
           <span>{{ a.message }}</span>
@@ -212,6 +248,7 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
           </el-link>
         </template>
       </el-alert>
+      <div v-if="visibleAlerts().length === 0" class="no-alert-tip">暂无异常提醒</div>
     </el-card>
 
     <el-row :gutter="16">
@@ -394,6 +431,14 @@ function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
 }
 .alert-link {
   margin-left: 12px;
+}
+.restore-link {
+  font-size: 12px;
+}
+.no-alert-tip {
+  color: #909399;
+  font-size: 13px;
+  padding: 4px 0;
 }
 .chart {
   width: 100%;
