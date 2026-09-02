@@ -589,3 +589,23 @@ export function restoreBackup(file: File): Promise<{ ok: boolean; restored_docum
   fd.append('file', file)
   return http.post('/backup/restore', fd)
 }
+
+// ---------- 配置状态校验 ----------
+export interface ConfigCheckItem {
+  key: string
+  label: string
+  level: 'ok' | 'warn' | 'error' | 'info'
+  message: string
+  detail: string
+}
+export interface ConfigCheckResult {
+  summary: string
+  ok_count: number
+  warn_count: number
+  error_count: number
+  checks: ConfigCheckItem[]
+}
+
+export function getConfigCheck(): Promise<ConfigCheckResult> {
+  return http.get('/system/config-check')
+}

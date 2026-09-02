@@ -6,6 +6,7 @@ import {
   createFilenameRule,
   deleteFilenameRule,
   deleteRecognitionTemplate,
+  getConfigCheck,
   getEmailStatus,
   getRelocateStatus,
   getSettings,
@@ -34,6 +35,35 @@ const accessPassword = ref('')
 const emailPassword = ref('')
 const saving = ref(false)
 const loaded = ref(false)
+
+// 配置状态校验
+const configCheck = ref<{ summary: string; checks: any[] } | null>(null)
+const configCheckLoading = ref(false)
+
+async function loadConfigCheck() {
+  configCheckLoading.value = true
+  try {
+    configCheck.value = await getConfigCheck()
+  } catch {
+    configCheck.value = null
+  } finally {
+    configCheckLoading.value = false
+  }
+}
+
+const configSummaryText = () => {
+  if (!configCheck.value) return ''
+  const s = configCheck.value.summary
+  if (s === 'ok') return '配置正常，可放心使用'
+  const w = configCheck.value.checks.filter((c) => c.level === 'warn').length
+  const e = configCheck.value.checks.filter((c) => c.level === 'error').length
+  if (s === 'error') return `存在 ${e} 项错误、${w} 项警告，部分功能可能不可用`
+  return `存在 ${w} 项警告，建议查看处理`
+}
+
+function configLevelLabel(l: string): string {
+  return { ok: '正常', warn: '警告', error: '错误', info: '提示' }[l] || l
+}
 
 // 文件名规则
 const fnRules = ref<FilenameRule[]>([])
@@ -202,6 +232,7 @@ async function load() {
   await loadEmailStatus()
   await loadRelocateStatus()
   await loadBackups()
+  await loadConfigCheck()
 }
 
 async function save() {
@@ -307,6 +338,39 @@ onMounted(load)
 
 <template>
   <div v-if="loaded && form" class="settings-page">
+    <el-card shadow="never" class="mb16">
+      <template #header>
+        <span>配置状态</span>
+        <el-button link size="small" @click="loadConfigCheck" style="margin-left: 8px">刷新</el-button>
+      </template>
+      <div v-loading="configCheckLoading">
+        <el-alert
+          v-if="configCheck"
+          :type="configCheck.summary === 'ok' ? 'success' : configCheck.summary === 'warn' ? 'warning' : 'error'"
+          :title="configSummaryText()"
+          :closable="false"
+          show-icon
+        />
+        <el-collapse v-if="configCheck" class="mt8">
+          <el-collapse-item :title="`查看明细（${configCheck.checks.length} 项）`">
+            <el-table :data="configCheck.checks" size="small" style="width: 100%">
+              <el-table-column prop="label" label="项目" width="120" />
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag
+                    :type="row.level === 'ok' ? 'success' : row.level === 'warn' ? 'warning' : row.level === 'error' ? 'danger' : 'info'"
+                    size="small"
+                  >{{ configLevelLabel(row.level) }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="message" label="说明" min-width="240" show-overflow-tooltip />
+              <el-table-column prop="detail" label="详情" min-width="160" show-overflow-tooltip />
+            </el-table>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
+    </el-card>
+
     <el-card shadow="never" class="mb16">
       <template #header><span>目录设置</span></template>
       <el-form label-width="120px">

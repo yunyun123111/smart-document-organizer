@@ -16,6 +16,7 @@ from backend.models import (
 )
 
 from backend.services.dashboard_service import get_dashboard_trends
+from backend.services.config_check_service import run_config_checks
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -106,4 +107,10 @@ def dashboard_stats(db: Session = Depends(get_db)):
 def dashboard_trends(db: Session = Depends(get_db)):
     """Dashboard 趋势：每日新增/识别成功率/OCR 失败率 + 异常提醒。"""
     return get_dashboard_trends(db)
+
+
+@router.get("/config-check")
+def config_check(db: Session = Depends(get_db)):
+    """配置状态校验：目录 / OCR / AI / 邮箱 / 安全 / 阈值 / 数据库。"""
+    return run_config_checks(db=db)
 
