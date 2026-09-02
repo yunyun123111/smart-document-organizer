@@ -372,6 +372,7 @@ onMounted(async () => {
           <el-tag v-if="row.document_type" size="small" type="primary">{{ row.document_type }}</el-tag>
           <el-tag v-else size="small" type="info">未识别</el-tag>
           <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+          <span v-if="row.status === 'duplicate' && row.duplicate_of" class="gray small">重复自:{{ row.duplicate_of }}</span>
           <span v-if="row.confidence !== null" class="gray small">{{ (row.confidence * 100).toFixed(0) }}%</span>
           <span class="gray small">{{ fmtSize(row.file_size) }}</span>
         </div>
@@ -400,6 +401,12 @@ onMounted(async () => {
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
           <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="重复来源" width="170" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.status === 'duplicate' && row.duplicate_of" class="gray small">{{ row.duplicate_of }}</span>
+          <span v-else class="gray small">—</span>
         </template>
       </el-table-column>
       <el-table-column label="置信度" width="85">

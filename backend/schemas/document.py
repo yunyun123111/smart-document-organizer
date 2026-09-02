@@ -19,6 +19,7 @@ class DocumentListItem(BaseModel):
     title: str
     confidence: Optional[float] = None
     status: str
+    duplicate_of: Optional[str] = None  # 重复文件的来源（原始文件名）
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

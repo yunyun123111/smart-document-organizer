@@ -146,7 +146,9 @@ class ArchiveService:
         # 刚刚提交的 archived 记录，判重会失效。
         # （此时 session 里是本次识别出的字段与状态，本就该落库）
         self.db.commit()
-        dup = duplicate_service.find_duplicate(self.db, file_hash)
+        # exclude_id=document_id：排除正在归档的文档自身（它处于 need_review，
+        # 不排除会命中自己而误判重复，导致人工审核归档全部失败）。
+        dup = duplicate_service.find_duplicate(self.db, file_hash, exclude_id=document_id)
         if dup is not None:
             logger.info("重复文件，跳过归档: %s (对应文档#%s)", src.name, dup.id)
             return ArchiveResult(

@@ -132,7 +132,43 @@ def list_documents(
             conds.append(Document.created_at <= f"{date_end} 23:59:59")
         query = query.filter(or_(*conds))
     docs = query.offset(skip).limit(limit).all()
-    return docs
+
+    # 重复文件：附加「重复来源」（同 hash 最早的非重复记录的文件名）
+    dup_map: dict[str, str] = {}
+    dup_docs = [d for d in docs if d.status == "duplicate" and d.file_hash]
+    if dup_docs:
+        hashes = {d.file_hash for d in dup_docs}
+        originals = (
+            db.query(Document)
+            .filter(
+                Document.file_hash.in_(hashes),
+                Document.status != "duplicate",
+            )
+            .order_by(Document.id.asc())
+            .all()
+        )
+        for o in originals:
+            dup_map.setdefault(
+                o.file_hash, o.original_filename or o.current_filename or f"文档#{o.id}"
+            )
+
+    return [
+        DocumentListItem(
+            id=d.id,
+            original_filename=d.original_filename,
+            current_filename=d.current_filename,
+            file_type=d.file_type,
+            file_size=d.file_size,
+            document_type=d.document_type,
+            title=d.title,
+            confidence=d.confidence,
+            status=d.status,
+            duplicate_of=dup_map.get(d.file_hash) if d.status == "duplicate" else None,
+            created_at=d.created_at,
+            updated_at=d.updated_at,
+        )
+        for d in docs
+    ]
 
 
 class RelocateRequest(BaseModel):

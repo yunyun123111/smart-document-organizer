@@ -128,6 +128,7 @@ export interface DocumentListItem {
   title: string
   confidence: number | null
   status: string
+  duplicate_of?: string
   created_at?: string
   updated_at?: string
 }
