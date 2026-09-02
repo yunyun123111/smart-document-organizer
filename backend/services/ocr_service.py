@@ -213,8 +213,8 @@ class OCRService:
             results: list[OCRResult] = []
             for page_index in range(doc.page_count):
                 page = doc.load_page(page_index)
-                # 150 DPI 渲染，兼顾清晰度与速度
-                pix = page.get_pixmap(dpi=150)
+                # 200 DPI 渲染（150dpi 下合同顶部小字/手写编号易漏识别）
+                pix = page.get_pixmap(dpi=200)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
                 results.append(self.recognize_image(img))
             return results

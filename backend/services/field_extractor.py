@@ -92,7 +92,7 @@ _VESSEL_QUOTED = re.compile(
 )
 # 物料名称：上下文锚定 + 前瞻截断
 _MATERIAL_CONTEXT = re.compile(
-    r"(?:物料名称|物料|品名|货物名称|货物品名|商品名称)[:：]?\s*"
+    r"(?:物料名称|物料|品名|品种|货物名称|货物品名|商品名称)[:：]?\s*"
     r"([\u4e00-\u9fa5A-Za-z0-9（）()%\.\-]{2,40}?)(?=\s*(?:数量|单位|规格|单价|备注|吨|[，,;；]|$))"
 )
 # 吨数后的粉/矿/钢/煤/油类物料（如 10000吨PB粉、500O吨铁矿粉）
@@ -343,6 +343,34 @@ def _quantity_context_m(text: str):
         return _norm_amount(m.group(1)), 0.85, "quantity_context", 85.0, SOURCE_RULE
     return None
 
+# 合同尾号：SJWLXS（DD）-2026-YC0458 取 YC 后 4 位；手写难识别，缺失时命名自动跳过
+_CONTRACT_SUFFIX = re.compile(r"YC[-_\-]?\s*([A-Za-z0-9]{4})", re.IGNORECASE)
+
+
+def _contract_suffix_m(text: str):
+    m = _CONTRACT_SUFFIX.search(text)
+    if m:
+        return m.group(1).upper(), 0.65, "contract_suffix_yc", 78.0, SOURCE_RULE
+    return None
+
+
+def _vessel_context_m(text: str):
+    m = _VESSEL_CONTEXT.search(text)
+    if m:
+        v = m.group(1).strip().rstrip(")）")
+        if v:
+            return v, 0.85, "vessel_context", 85.0, SOURCE_RULE
+    return None
+
+
+def _vessel_quoted_m(text: str):
+    m = _VESSEL_QUOTED.search(text)
+    if m:
+        v = m.group(1).strip().rstrip(")）")
+        if v:
+            return v, 0.8, "vessel_quoted", 80.0, SOURCE_RULE
+    return None
+
 
 # 文件名专用 matcher（规范化输出 + 至少含一个汉字，避免数字误判）
 def _filename_date_matcher(text: str):
@@ -408,8 +436,8 @@ _FIELD_RULES: dict[str, list] = {
         _amount_matcher(_AMOUNT_PATTERNS[3], 0.6, "amount_yuan", 60.0),
     ],
     "vessel": [
-        _m_group(_VESSEL_CONTEXT, 1, 0.85, "vessel_context", 85.0),
-        _m_group(_VESSEL_QUOTED, 1, 0.8, "vessel_quoted", 80.0),
+        _vessel_context_m,
+        _vessel_quoted_m,
     ],
     "material": [
         _m_group(_MATERIAL_CONTEXT, 1, 0.8, "material_context", 80.0),
@@ -418,6 +446,9 @@ _FIELD_RULES: dict[str, list] = {
     "quantity": [
         _invoice_quantity_matcher,
         _quantity_context_m,
+    ],
+    "contract_suffix": [
+        _contract_suffix_m,
     ],
 }
 
@@ -438,7 +469,7 @@ _FILENAME_RULES: dict[str, list] = {
 }
 
 # 字段展示顺序（保持历史顺序稳定）
-_FIELD_ORDER = ["company", "seller", "date", "contract_no", "order_no", "invoice_no",
+_FIELD_ORDER = ["company", "seller", "date", "contract_no", "contract_suffix", "order_no", "invoice_no",
                 "amount", "vessel", "material", "quantity"]
 
 

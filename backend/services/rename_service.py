@@ -39,7 +39,9 @@ VARIABLE_ALIASES: dict[str, list[str]] = {
     "收款方": ["payee", "收款方"],
     "船名": ["vessel", "船名"],
     "物料": ["material", "物料名称", "物料", "品名"],
+    "品种": ["material", "品种", "物料"],
     "数量": ["quantity", "数量"],
+    "合同尾号": ["contract_suffix", "合同尾号"],
     "销售方": ["seller", "company", "销售方", "公司"],
     "购买方": ["buyer", "company", "购买方", "公司"],
 }

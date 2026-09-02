@@ -1,0 +1,3 @@
+[console_scripts]
+rapidocr_onnxruntime = rapidocr_onnxruntime.rapid_ocr_api:main
+
