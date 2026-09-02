@@ -70,3 +70,10 @@ class ReviewApproveRequest(BaseModel):
     category_path: Optional[str] = None
     filename: Optional[str] = None  # 自定义文件名（可选）
     fields: Optional[dict[str, str]] = None
+
+
+class ReviewGroup(BaseModel):
+    """智能批处理：同类文件分组。"""
+    group_key: str
+    group_label: str
+    documents: list[DocumentListItem]

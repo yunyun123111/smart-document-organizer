@@ -433,3 +433,14 @@ export function deleteFilenameRule(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/filename-rules/${id}`)
 }
 
+
+// ---------- 智能批处理：同类文件分组 ----------
+export interface ReviewGroup {
+  group_key: string
+  group_label: string
+  documents: DocumentListItem[]
+}
+
+export function listReviewGroups(): Promise<ReviewGroup[]> {
+  return http.get('/review/groups')
+}

@@ -1,93 +1,112 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   approveReview,
   batchApprove,
   batchDeleteDocuments,
   getReviewDetail,
-  listReview,
+  listReviewGroups,
   skipReview,
   type DocumentListItem,
   type ReviewDetail,
+  type ReviewGroup,
 } from '@/api'
 
-const items = ref<DocumentListItem[]>([])
+const groups = ref<ReviewGroup[]>([])
 const loading = ref(false)
 const drawer = ref(false)
 const detail = ref<ReviewDetail | null>(null)
 const saving = ref(false)
+const groupSelected = ref<Record<string, number[]>>({})
+const groupBusy = ref<string | null>(null)
 
 const editableFields = ref<Record<string, string>>({})
 const docType = ref('')
 const category = ref('')
 const customFilename = ref('')
-const selectedIds = ref<number[]>([])
-const batchSaving = ref(false)
 
-function onSelectionChange(rows: DocumentListItem[]) {
-  selectedIds.value = rows.map((r) => r.id)
+const totalCount = computed(() => groups.value.reduce((n, g) => n + g.documents.length, 0))
+
+function selCount(key: string): number {
+  return (groupSelected.value[key] || []).length
 }
 
-async function batchConfirm() {
-  if (selectedIds.value.length === 0) {
+function onGroupSelection(key: string, rows: DocumentListItem[]) {
+  groupSelected.value[key] = rows.map((r) => r.id)
+}
+
+function toggleAllInGroup(g: ReviewGroup) {
+  const all = g.documents.map((d) => d.id)
+  const cur = groupSelected.value[g.group_key] || []
+  groupSelected.value[g.group_key] = cur.length === all.length && all.length > 0 ? [] : [...all]
+}
+
+async function groupApprove(g: ReviewGroup) {
+  const ids = groupSelected.value[g.group_key] || []
+  if (ids.length === 0) {
     ElMessage.warning('请先勾选要归档的文件')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `将按各自的建议分类与文件名，批量确认归档 ${selectedIds.value.length} 个文件？`,
+      `将按各自建议分类与文件名，批量确认归档「${g.group_label}」的 ${ids.length} 个文件？`,
       '批量确认归档',
       { type: 'warning' },
     )
   } catch {
     return
   }
-  batchSaving.value = true
+  groupBusy.value = g.group_key
   try {
-    const res = await batchApprove(selectedIds.value)
+    const res = await batchApprove(ids)
     if (res.failed_count === 0) {
-      ElMessage.success(`已批量归档 ${res.success_count} 个文件`)
+      ElMessage.success(`已归档 ${res.success_count} 个文件`)
     } else {
-      ElMessage.warning(`归档完成 ${res.success_count} 个，失败 ${res.failed_count} 个`)
+      ElMessage.warning(`归档成功 ${res.success_count} 个，失败 ${res.failed_count} 个`)
       const errs = res.results.filter((r) => !r.success).map((r) => r.error || '未知错误')
       ElMessageBox.alert(`失败原因：${errs.join('；')}`, '部分归档失败', { type: 'warning' })
     }
-    drawer.value = false
     await load()
   } finally {
-    batchSaving.value = false
+    groupBusy.value = null
   }
 }
 
-async function batchRemove() {
-  if (selectedIds.value.length === 0) {
+async function groupRemove(g: ReviewGroup) {
+  const ids = groupSelected.value[g.group_key] || []
+  if (ids.length === 0) {
     ElMessage.warning('请先勾选要移除的文件')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `将从系统移除 ${selectedIds.value.length} 个文件（记录和磁盘文件一并删除，不可恢复），确定？`,
+      `将从系统移除「${g.group_label}」的 ${ids.length} 个文件（记录和磁盘文件一并删除，不可恢复），确定？`,
       '批量移除',
       { type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消' },
     )
   } catch {
     return
   }
-  batchSaving.value = true
+  groupBusy.value = g.group_key
   try {
-    const res = await batchDeleteDocuments(selectedIds.value)
+    const res = await batchDeleteDocuments(ids)
     ElMessage.success(`已移除 ${res.deleted_count} 个文件`)
     await load()
   } finally {
-    batchSaving.value = false
+    groupBusy.value = null
   }
 }
 
 async function load() {
   loading.value = true
   try {
-    items.value = await listReview()
+    groups.value = await listReviewGroups()
+    // 清理已消失文档的勾选
+    const alive = new Set(groups.value.flatMap((g) => g.documents.map((d) => d.id)))
+    for (const k of Object.keys(groupSelected.value)) {
+      groupSelected.value[k] = (groupSelected.value[k] || []).filter((id) => alive.has(id))
+    }
   } finally {
     loading.value = false
   }
@@ -152,58 +171,78 @@ onMounted(load)
     <el-card shadow="never">
       <template #header>
         <div class="head">
-          <span>待人工确认（{{ items.length }}）</span>
-          <div>
-            <el-button
-              type="success"
-              size="small"
-              :disabled="selectedIds.length === 0"
-              :loading="batchSaving"
-              @click="batchConfirm"
-            >批量确认归档（{{ selectedIds.length }}）</el-button>
-            <el-button
-              type="danger"
-              size="small"
-              :disabled="selectedIds.length === 0"
-              :loading="batchSaving"
-              @click="batchRemove"
-            >批量移除（{{ selectedIds.length }}）</el-button>
-            <el-button size="small" @click="load">刷新</el-button>
-          </div>
+          <span>待人工确认（{{ totalCount }}）</span>
+          <el-button size="small" @click="load">刷新</el-button>
         </div>
       </template>
 
-      <el-empty v-if="!loading && items.length === 0" description="暂无待确认文件" />
+      <div v-if="!loading && groups.length === 0">
+        <el-empty description="暂无待确认文件" />
+      </div>
 
-      <el-table :data="items" v-loading="loading" style="width: 100%" @selection-change="onSelectionChange">
-        <el-table-column type="selection" width="45" />
-        <el-table-column prop="original_filename" label="文件名" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="document_type" label="识别类型" width="140">
-          <template #default="{ row }">
-            <el-tag v-if="row.document_type">{{ row.document_type }}</el-tag>
-            <el-tag v-else type="info">未识别</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="file_type" label="类型" width="80" />
-        <el-table-column prop="file_size" label="大小" width="100">
-          <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
-        </el-table-column>
-        <el-table-column label="置信度" width="120">
-          <template #default="{ row }">
-            <span v-if="row.confidence !== null">{{ (row.confidence * 100).toFixed(0) }}%</span>
-            <span v-else class="gray">—</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="created_at" label="时间" width="170" />
-        <el-table-column label="操作" width="140" fixed="right">
-          <template #default="{ row }">
-            <el-button type="primary" link @click="open(row.id)">审核</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div v-loading="loading" class="groups">
+        <div v-for="g in groups" :key="g.group_key" class="group-card">
+          <div class="group-head">
+            <div class="group-title">
+              <span class="group-label">{{ g.group_label }}</span>
+              <el-tag size="small" :type="g.group_key.startsWith('single') ? 'info' : 'warning'">
+                {{ g.documents.length }} 份
+              </el-tag>
+              <span v-if="selCount(g.group_key)" class="gray small">已选 {{ selCount(g.group_key) }} 份</span>
+            </div>
+            <div class="group-actions">
+              <el-button size="small" @click="toggleAllInGroup(g)">全选本组</el-button>
+              <el-button
+                type="success"
+                size="small"
+                :disabled="selCount(g.group_key) === 0"
+                :loading="groupBusy === g.group_key"
+                @click="groupApprove(g)"
+              >确认归档（{{ selCount(g.group_key) }}）</el-button>
+              <el-button
+                type="danger"
+                size="small"
+                :disabled="selCount(g.group_key) === 0"
+                :loading="groupBusy === g.group_key"
+                @click="groupRemove(g)"
+              >移除（{{ selCount(g.group_key) }}）</el-button>
+            </div>
+          </div>
+          <el-table
+            :data="g.documents"
+            style="width: 100%"
+            @selection-change="(rows: any) => onGroupSelection(g.group_key, rows)"
+          >
+            <el-table-column type="selection" width="45" />
+            <el-table-column prop="original_filename" label="文件名" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="document_type" label="识别类型" width="130">
+              <template #default="{ row }">
+                <el-tag v-if="row.document_type">{{ row.document_type }}</el-tag>
+                <el-tag v-else type="info">未识别</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="file_type" label="类型" width="70" />
+            <el-table-column prop="file_size" label="大小" width="90">
+              <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
+            </el-table-column>
+            <el-table-column label="置信度" width="90">
+              <template #default="{ row }">
+                <span v-if="row.confidence !== null">{{ (row.confidence * 100).toFixed(0) }}%</span>
+                <span v-else class="gray">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="时间" width="160" />
+            <el-table-column label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button type="primary" link @click="open(row.id)">审核</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </div>
     </el-card>
 
-    <!-- 审核抽屉 -->
+    <!-- 单份审核抽屉 -->
     <el-drawer v-model="drawer" title="人工审核" size="560px">
       <div v-if="detail" v-loading="saving">
         <el-descriptions :column="1" border class="mb16">
@@ -248,6 +287,41 @@ onMounted(load)
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.group-card {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: #f7f8fa;
+  border-bottom: 1px solid #ebeef5;
+}
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.group-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+.group-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .mb16 { margin-bottom: 16px; }
 .w100 { width: 100%; }

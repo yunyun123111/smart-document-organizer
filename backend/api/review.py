@@ -25,8 +25,10 @@ from backend.schemas.document import (
     DocumentListItem,
     DocumentUpdate,
     ReviewApproveRequest,
+    ReviewGroup,
 )
 from backend.services.archive_service import ArchiveService
+from backend.services.cluster_service import cluster_documents
 from backend.services.rename_service import DEFAULT_TEMPLATE, rename_service
 from backend.utils.logger import get_logger
 
@@ -139,6 +141,19 @@ def list_review(db: Session = Depends(get_db)):
         .all()
     )
     return docs
+
+
+@router.get("/groups", response_model=list[ReviewGroup])
+def list_review_groups(db: Session = Depends(get_db)):
+    """智能批处理：待确认文件按 合同号→公司名→模板版式 聚类分组。"""
+    docs = (
+        db.query(Document)
+        .options(joinedload(Document.fields))
+        .filter(Document.status == STATUS_NEED_REVIEW)
+        .order_by(Document.created_at.desc())
+        .all()
+    )
+    return cluster_documents(docs)
 
 
 
