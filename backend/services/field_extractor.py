@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass, field
 
 from backend.utils.logger import get_logger
+from backend.services.ocr_cleaner import ocr_cleaner
 
 logger = get_logger("services.field_extractor")
 
@@ -453,10 +454,16 @@ class FieldExtractor:
         text: str | None,
         document_type: str | None = None,
         filename: str | None = None,
+        known_companies: list[str] | None = None,
     ) -> list[ExtractedField]:
-        """从清洗后的文本中提取字段（可附文件名做缺失补全）。"""
+        """从清洗后的文本中提取字段（可附文件名做缺失补全）。
+
+        known_companies: 已知公司名单（OCR 公司名模糊匹配用）。
+        """
         self.last_conflicts = []
+        # 基础清洗（竖排/页码/水印）→ OCR 二次清洗（数字纠错/日期统一/公司名/发票代码）
         text = clean_ocr_text(text or "")
+        text = ocr_cleaner.clean(text, known_companies=known_companies).text
         if not text and not filename:
             return []
 

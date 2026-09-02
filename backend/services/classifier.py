@@ -25,6 +25,7 @@ from backend.services.confidence_service import (
 )
 from backend.services.field_extractor import field_extractor
 from backend.services.filename_rule_service import filename_rule_service
+from backend.services.ocr_cleaner import get_known_companies, ocr_cleaner
 from backend.services.ocr_service import ocr_service
 from backend.services.parser_service import parser_service
 from backend.services.rename_service import DEFAULT_TEMPLATE, rename_service
@@ -107,10 +108,13 @@ class ClassifierService:
             parsed = parser_service.parse_file(path)
             parsed = clean_parsed_document(parsed)
 
-            # 2. OCR 补充（扫描 PDF / 图片）
+            # 2. OCR 补充（扫描 PDF / 图片）+ OCR 结果二次清洗
+            known_companies: list[str] = get_known_companies(self.db)
             if parsed.needs_ocr:
                 result.needs_ocr = True
                 parsed.text = self._ocr_text(path, parsed)
+                cleaned = ocr_cleaner.clean(parsed.text, known_companies=known_companies)
+                parsed.text = cleaned.text
 
             text = parsed.text or ""
             result.text = text
@@ -126,7 +130,7 @@ class ClassifierService:
             rule_conf = rule_confidence(best) if best else 0.0
 
             # 4. 字段提取（多规则并行引擎：正则+关键词+模板+文件名补全）
-            extracted = field_extractor.extract(text, filename=path.name)
+            extracted = field_extractor.extract(text, filename=path.name, known_companies=known_companies)
             result.field_conflicts = [c.__dict__ for c in field_extractor.last_conflicts]
             fields_dict: dict[str, tuple] = {}
             for f in extracted:
