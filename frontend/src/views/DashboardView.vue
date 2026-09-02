@@ -3,10 +3,10 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import * as echarts from 'echarts'
 import {
-  documentFileUrl,
   getDashboardStats,
   getDashboardTrends,
   listDocuments,
+  openDocumentFile,
   type DashboardAlert,
   type DashboardStats,
   type DashboardTrends,
@@ -62,8 +62,12 @@ function statusLabel(s: string) {
   return map[s] ?? s
 }
 
-function openFile(id: number) {
-  window.open(documentFileUrl(id), '_blank')
+async function openFile(id: number) {
+  try {
+    await openDocumentFile(id)
+  } catch {
+    // 打开失败由 http 拦截器提示
+  }
 }
 
 function fmtSize(n: number): string {

@@ -159,6 +159,20 @@ export function documentFileUrl(id: number): string {
   return `/api/documents/${id}/file`
 }
 
+// 带鉴权下载文件流（axios 自动携带 token，避免新标签页 401）
+export async function downloadDocumentFile(id: number): Promise<Blob> {
+  const blob = (await http.get(`/documents/${id}/file`, { responseType: 'blob' })) as unknown as Blob
+  return blob
+}
+
+// 带鉴权在新标签页打开原文件
+export async function openDocumentFile(id: number): Promise<void> {
+  const blob = await downloadDocumentFile(id)
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank')
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
 export function deleteDocument(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/documents/${id}`)
 }

@@ -6,12 +6,13 @@ import { useMobile } from '@/composables/useMobile'
 import {
   batchDeleteDocuments,
   deleteDocument,
-  documentFileUrl,
+  downloadDocumentFile,
   exportDocumentsZip,
   getDocument,
   listDocumentCategories,
   listDocuments,
   listDocumentTypes,
+  openDocumentFile,
   renameDocument,
   suggestDocuments,
   type DocumentDetail,
@@ -198,8 +199,51 @@ function statusLabel(s: string) {
   return map[s] ?? s
 }
 
-function openFile(id: number) {
-  window.open(documentFileUrl(id), '_blank')
+async function openFile(id: number) {
+  try {
+    await openDocumentFile(id)
+  } catch (e: any) {
+    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+  }
+}
+
+// ---- 文档预览（axios 带 token 下载为 Blob，弹窗内展示）----
+const previewDialog = ref(false)
+const previewLoading = ref(false)
+const previewUrl = ref('')
+const previewName = ref('')
+const previewExt = ref('')
+
+const PREVIEW_IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']
+const PREVIEW_TEXT = ['txt', 'md', 'csv', 'json', 'log', 'xml', 'html']
+const PREVIEW_BLOCK = ['doc', 'docx', 'xls', 'xlsx', 'zip', 'rar', '7z', 'exe']
+
+async function preview(row: DocumentListItem) {
+  const ext = (row.current_filename || row.original_filename || '').toLowerCase().split('.').pop() || ''
+  if (PREVIEW_BLOCK.includes(ext)) {
+    ElMessage.warning('该格式不支持在线预览，请用「打开」查看')
+    return
+  }
+  previewLoading.value = true
+  try {
+    const blob = await downloadDocumentFile(row.id)
+    if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+    previewUrl.value = URL.createObjectURL(blob)
+    previewName.value = row.current_filename || row.original_filename
+    previewExt.value = ext
+    previewDialog.value = true
+  } catch (e: any) {
+    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+function onPreviewClosed() {
+  if (previewUrl.value) {
+    URL.revokeObjectURL(previewUrl.value)
+    previewUrl.value = ''
+  }
 }
 
 function fmtSize(n: number): string {
@@ -335,6 +379,7 @@ onMounted(async () => {
         <div class="doc-actions">
           <el-button size="small" @click="rename(row)">重命名</el-button>
           <el-button size="small" @click="open(row.id)">详情</el-button>
+          <el-button size="small" type="primary" @click="preview(row)">预览</el-button>
           <el-button v-if="row.status === 'archived'" size="small" type="success" @click="openFile(row.id)">打开</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </div>
@@ -366,10 +411,11 @@ onMounted(async () => {
         <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
       </el-table-column>
       <el-table-column prop="created_at" label="时间" width="160" />
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="rename(row)">重命名</el-button>
           <el-button link type="primary" @click="open(row.id)">详情</el-button>
+          <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button v-if="row.status === 'archived'" link type="success" @click="openFile(row.id)">
             打开
           </el-button>
@@ -401,6 +447,16 @@ onMounted(async () => {
       <el-input type="textarea" :rows="8" readonly :model-value="detail.extracted_text.slice(0, 2000)" />
     </div>
   </el-drawer>
+
+  <!-- 文档预览弹窗 -->
+  <el-dialog v-model="previewDialog" :title="previewName" width="82%" top="4vh" append-to-body @closed="onPreviewClosed">
+    <div v-loading="previewLoading" class="preview-body">
+      <iframe v-if="previewExt === 'pdf'" :src="previewUrl" class="preview-frame" />
+      <img v-else-if="PREVIEW_IMAGE.includes(previewExt)" :src="previewUrl" class="preview-img" />
+      <iframe v-else-if="PREVIEW_TEXT.includes(previewExt)" :src="previewUrl" class="preview-frame" />
+      <el-empty v-else description="该格式不支持在线预览" :image-size="80" />
+    </div>
+  </el-dialog>
 </template>
 
 <style scoped>
@@ -510,5 +566,21 @@ onMounted(async () => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+}
+.preview-body {
+  min-height: 60vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.preview-frame {
+  width: 100%;
+  height: 72vh;
+  border: none;
+}
+.preview-img {
+  max-width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
 }
 </style>
