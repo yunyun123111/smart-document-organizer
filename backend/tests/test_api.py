@@ -238,3 +238,80 @@ class TestSettings:
         body = r.json()
         assert "total_documents" in body
         assert "pending_review" in body
+
+
+class TestBatchReview:
+    """批量确认 / 聚类分组 / 模板学习 回归。"""
+
+    @staticmethod
+    def _contract(no: str, amount: str = "128,500.00") -> str:
+        """生成内容不同但可控的合同文本（避免被重复检测拦截）。"""
+        return (
+            CONTRACT_TXT.replace("XS202608001", no)
+            .replace("128,500.00", amount)
+        )
+
+    def _make_review_docs(self, client, specs: list[tuple[str, str]]) -> list[int]:
+        """specs: [(文件名, 合同号)] 或 [(文件名, 合同号, 金额)]"""
+        for spec in specs:
+            name, no = spec[0], spec[1]
+            amount = spec[2] if len(spec) > 2 else "128,500.00"
+            content = self._contract(no, amount)
+            client.post(
+                "/api/documents/upload",
+                files={"file": (name, content.encode("utf-8"), "text/plain")},
+            )
+        r = client.post("/api/processing/start", json={})
+        _wait_job(client, r.json()["id"])
+        items = client.get("/api/review").json()
+        return [it["id"] for it in items]
+
+    def test_batch_approve_all(self, client):
+        ids = self._make_review_docs(client, [("合同A.txt", "XS001"), ("合同B.txt", "XS002")])
+        assert len(ids) == 2
+        r = client.post("/api/review/batch-approve", json={"doc_ids": ids})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["success_count"] == 2
+        assert body["failed_count"] == 0
+        for it in ids:
+            d = client.get(f"/api/documents/{it}").json()
+            assert d["status"] == "archived"
+
+    def test_batch_approve_partial_failure(self, client):
+        ids = self._make_review_docs(client, [("合同C.txt", "XS003"), ("合同D.txt", "XS004")])
+        # 先单条归档第一个 → 它不再处于待审核
+        r = client.post(f"/api/review/{ids[0]}/approve", json={})
+        assert r.status_code == 200, r.text
+        r = client.post("/api/review/batch-approve", json={"doc_ids": ids})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["success_count"] == 1
+        assert body["failed_count"] == 1
+
+    def test_learn_template_on_approve(self, client):
+        """确认归档后自动学习识别模板（同类下次直接归档）。"""
+        ids = self._make_review_docs(client, [("合同E.txt", "XS005")])
+        r = client.post(f"/api/review/{ids[0]}/approve", json={})
+        assert r.status_code == 200, r.text
+        tpls = client.get("/api/review/templates").json()
+        assert any(
+            t["document_type"] == "销售合同" and t["category_path"] == "合同/销售合同"
+            for t in tpls
+        )
+
+    def test_review_groups_by_contract_no(self, client):
+        """相同合同号的文件应聚类为同一组（智能批处理）。"""
+        client.post(
+            "/api/documents/upload",
+            files={"file": ("A.txt", self._contract("XS006", "128,500.00").encode("utf-8"), "text/plain")},
+        )
+        client.post(
+            "/api/documents/upload",
+            files={"file": ("B.txt", self._contract("XS006", "200,000.00").encode("utf-8"), "text/plain")},
+        )
+        r = client.post("/api/processing/start", json={})
+        _wait_job(client, r.json()["id"])
+        groups = client.get("/api/review/groups").json()
+        contract_groups = [g for g in groups if g["group_key"].startswith("contract:")]
+        assert any(len(g["documents"]) >= 2 for g in contract_groups), f"未按合同号聚类: {groups}"

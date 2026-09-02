@@ -142,8 +142,10 @@ class ProcessingService:
             except Exception as e:  # noqa: BLE001
                 logger.error("批量任务 #%s 异常: %s", job_id, e)
             finally:
-                if not cancel_event.is_set():
-                    self._finish_job(job_id, cancel_event)
+                # 无论是否取消都必须落终态：_finish_job 内部按 cancel_event
+                # 判定 CANCELLED / COMPLETED。此前取消时跳过这里，任务会
+                # 永远停在 running，前端轮询不到终态而一直转圈。
+                self._finish_job(job_id, cancel_event)
 
     def _finish_job(self, job_id: int, cancel_event: threading.Event) -> None:
         with SessionLocal() as db:

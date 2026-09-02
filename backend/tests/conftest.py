@@ -20,6 +20,7 @@ os.environ["AI_ENABLED"] = "False"
 os.environ["AI_BASE_URL"] = ""
 os.environ["AI_API_KEY"] = ""
 os.environ["ALLOW_OVERWRITE"] = "False"
+os.environ["ACCESS_PASSWORD"] = ""  # 测试环境关闭访问密码鉴权，避免 .env 密码导致全部 API 401
 
 import pytest
 
