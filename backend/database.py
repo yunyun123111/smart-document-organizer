@@ -5,10 +5,12 @@
 """
 from __future__ import annotations
 
-from typing import Generator
+from typing import Callable, Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+
+from datetime import datetime
 
 from backend.config import settings
 from backend.models import Base, Category, FilenameRule, RenameTemplate, Rule
@@ -164,9 +166,11 @@ def seed_default_rules(db: Session) -> int:
 
 
 def init_db() -> None:
-    """初始化数据库：确保目录、建表、写入默认数据。"""
+    """初始化数据库：确保目录、建表、写入默认数据、应用迁移。"""
     settings.ensure_dirs()
     Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        run_migrations(db)
     logger.info("数据库表结构已就绪: %s", settings.DATABASE_URL)
     with SessionLocal() as db:
         seed_default_categories(db)
@@ -255,6 +259,86 @@ def seed_default_rename_templates(db: Session) -> int:
     return created
 
 
+# ============ 数据库迁移机制（P0-2） ============
+# 目标：改表结构一律走 MIGRATIONS，禁止手写 SQL 直接改库，
+# 避免"数据库有列但代码 model 不知道"的漂移（如历史遗留的 document_scope）。
+#
+# 用法：需要改表结构时——
+#   1. 在 ORM model 中加入新字段/新表（供 create_all / 新库使用）
+#   2. SCHEMA_VERSION += 1
+#   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
+#      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
+_SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
+SCHEMA_VERSION = 1
+
+# 迁移列表：[(version, name, upgrade_fn)]
+# upgrade_fn(db: Session) -> None，须幂等。
+MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = []
 
 
+def _ensure_schema_migrations(db: Session) -> None:
+    db.execute(
+        text(
+            f"CREATE TABLE IF NOT EXISTS {_SCHEMA_MIGRATIONS_TABLE} ("
+            "version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT)"
+        )
+    )
+    db.commit()
 
+
+def _applied_versions(db: Session) -> set[int]:
+    rows = db.execute(text(f"SELECT version FROM {_SCHEMA_MIGRATIONS_TABLE}")).fetchall()
+    return {r[0] for r in rows}
+
+
+def _record_migration(db: Session, version: int, name: str) -> None:
+    db.execute(
+        text(
+            f"INSERT OR REPLACE INTO {_SCHEMA_MIGRATIONS_TABLE} "
+            "(version, name, applied_at) VALUES (:v, :n, :t)"
+        ),
+        {"v": version, "n": name, "t": datetime.now().isoformat()},
+    )
+    db.commit()
+
+
+def _has_business_tables(db: Session) -> bool:
+    """判断是否已有业务表（老库）而非全新空库。"""
+    rows = db.execute(
+        text(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' AND name != :m"
+        ),
+        {"m": _SCHEMA_MIGRATIONS_TABLE},
+    ).fetchall()
+    return bool(rows)
+
+
+def run_migrations(db: Session) -> None:
+    """按版本顺序应用未执行的迁移。
+
+    - 新库（无业务表）：直接标记 fresh baseline = SCHEMA_VERSION，跳过全部迁移
+      （create_all 已建出最新结构）
+    - 老库（有业务表但无迁移记录）：标记 legacy baseline = SCHEMA_VERSION - 1，
+      执行最后一个增量迁移补齐到最新
+    - 之后每次升级：SCHEMA_VERSION +1 + MIGRATIONS 追加，老库执行新迁移，新库跳过
+    """
+    _ensure_schema_migrations(db)
+    applied = _applied_versions(db)
+    if not applied:
+        if _has_business_tables(db):
+            base = SCHEMA_VERSION - 1
+            _record_migration(db, 0, "legacy baseline")
+            logger.info("数据库迁移：检测到既有库，标记 legacy baseline=%d", base)
+        else:
+            base = SCHEMA_VERSION
+            _record_migration(db, 0, "fresh baseline")
+            logger.info("数据库迁移：新库 fresh baseline=%d", base)
+        applied = {v for v, _, _ in MIGRATIONS if v <= base}
+
+    for v, name, fn in MIGRATIONS:
+        if v <= SCHEMA_VERSION and v not in applied:
+            logger.info("应用数据库迁移 v%d: %s", v, name)
+            fn(db)
+            _record_migration(db, v, name)
+            applied.add(v)

@@ -22,6 +22,8 @@ os.environ["AI_API_KEY"] = ""
 os.environ["ALLOW_OVERWRITE"] = "False"
 os.environ["ACCESS_PASSWORD"] = ""  # 测试环境关闭访问密码鉴权，避免 .env 密码导致全部 API 401
 
+from sqlalchemy import text
+
 import pytest
 
 from backend.config import settings
@@ -48,6 +50,9 @@ def _isolated_db():
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+    # schema_migrations 不在 ORM metadata 中，需手动清理，避免跨用例残留
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS schema_migrations"))
 
 
 @pytest.fixture
