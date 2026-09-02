@@ -46,10 +46,28 @@ async function start() {
     const job = await startProcessing()
     running.value = job
     ElMessage.success('批量整理已开始')
+    // 若任务瞬间结束（如收件箱为空），直接收尾，避免按钮一直转圈
+    if (isFinished(job)) {
+      finish(job)
+      return
+    }
     poll()
   } catch {
     /* 错误已在拦截器提示 */
   }
+}
+
+function isFinished(job: ProcessingJob): boolean {
+  return job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed'
+}
+
+async function finish(job: ProcessingJob) {
+  stopPoll()
+  running.value = null
+  ElMessage.success(
+    `整理完成：成功 ${job.success_count} / 待审核 ${job.review_count} / 重复 ${job.duplicate_count} / 失败 ${job.failed_count}`,
+  )
+  await loadInbox()
 }
 
 async function stop() {
@@ -63,12 +81,15 @@ function poll() {
   stopPoll()
   pollTimer.value = window.setInterval(async () => {
     if (!running.value) return
-    const job = await getJob(running.value.id)
-    running.value = job
-    if (job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed') {
-      stopPoll()
-      ElMessage.success(`整理完成：成功 ${job.success_count} / 待审核 ${job.review_count} / 重复 ${job.duplicate_count} / 失败 ${job.failed_count}`)
-      await loadInbox()
+    try {
+      const job = await getJob(running.value.id)
+      if (!running.value) return
+      running.value = job
+      if (isFinished(job)) {
+        finish(job)
+      }
+    } catch {
+      /* 轮询失败保留当前状态，下一轮继续，避免界面卡死 */
     }
   }, 1000)
 }
