@@ -57,6 +57,38 @@ export function getDashboardTrends(): Promise<DashboardTrends> {
   return http.get('/system/dashboard/trends')
 }
 
+// ---------- 文件关联（重定位） ----------
+export interface MissingDoc {
+  id: number
+  original_filename: string
+  current_filename: string
+  path: string
+}
+
+export interface RelocateStatus {
+  total: number
+  missing_count: number
+  missing: MissingDoc[]
+}
+
+export interface RelocateResult {
+  relinked: number
+  failed: number
+  total: number
+  matched: { id: number; filename: string; new_path: string }[]
+  unmatched: MissingDoc[]
+  error?: string
+}
+
+export function getRelocateStatus(): Promise<RelocateStatus> {
+  return http.get('/documents/relocate/status')
+}
+
+export function relocateDocuments(search_roots: string[], by_hash = false): Promise<RelocateResult> {
+  return http.post('/documents/relocate', { search_roots, by_hash })
+}
+
+
 
 // ---------- 批量整理 ----------
 export interface ProcessingJob {

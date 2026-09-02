@@ -31,6 +31,7 @@ from backend.services.document_search import (
     suggest,
 )
 from backend.services.duplicate_service import duplicate_service
+from backend.services.relocate_service import missing_documents, relocate
 from backend.services.operation_service import log_operation
 from backend.services.processing_service import processing_service
 from backend.utils.file_utils import get_file_type, get_mime_type
@@ -132,6 +133,25 @@ def list_documents(
         query = query.filter(or_(*conds))
     docs = query.offset(skip).limit(limit).all()
     return docs
+
+
+class RelocateRequest(BaseModel):
+    search_roots: list[str] | None = None
+    by_hash: bool = False
+
+
+@router.get("/relocate/status")
+def relocate_status(db: Session = Depends(get_db)):
+    """检测路径失效（文件已被移动/删除）的记录。"""
+    missing = missing_documents(db)
+    total = db.query(Document).count()
+    return {"total": total, "missing_count": len(missing), "missing": missing}
+
+
+@router.post("/relocate")
+def relocate_documents(req: RelocateRequest, db: Session = Depends(get_db)):
+    """重新关联失效文件：在归档根/指定目录下按文件名或哈希找回并更新路径。"""
+    return relocate(db, search_roots=req.search_roots, by_hash=req.by_hash)
 
 
 @router.get("/suggest")

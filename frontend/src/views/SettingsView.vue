@@ -7,7 +7,9 @@ import {
   deleteFilenameRule,
   deleteRecognitionTemplate,
   getEmailStatus,
+  getRelocateStatus,
   getSettings,
+  relocateDocuments,
   listCategoriesFlat,
   listFilenameRules,
   listRecognitionTemplates,
@@ -40,6 +42,42 @@ const tplLoading = ref(false)
 // 邮箱接收状态
 const emailStatus = ref<{ running: boolean; enabled: boolean; last_check?: string; last_error?: string | null; last_count?: number } | null>(null)
 const emailChecking = ref(false)
+
+// 文件关联（重定位）
+const relocating = ref(false)
+const relocateSearchRoot = ref('')
+const relStatus = ref<{ total: number; missing_count: number; missing: { id: number; current_filename: string; path: string }[] } | null>(null)
+const relResult = ref<{ relinked: number; failed: number; matched: any[]; unmatched: any[]; error?: string } | null>(null)
+
+async function loadRelocateStatus() {
+  try {
+    relStatus.value = await getRelocateStatus()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+async function doRelocate(byHash: boolean) {
+  relocating.value = true
+  relResult.value = null
+  try {
+    const roots = relocateSearchRoot.value.trim() ? [relocateSearchRoot.value.trim()] : []
+    const res = await relocateDocuments(roots, byHash)
+    relResult.value = res
+    if (res.error) {
+      ElMessage.warning(res.error)
+    } else if (res.relinked > 0) {
+      ElMessage.success(`已重新关联 ${res.relinked} 个文件`)
+    } else {
+      ElMessage.info(`未找到可重新关联的文件${res.failed ? `（仍有 ${res.failed} 个未匹配）` : ''}`)
+    }
+    await loadRelocateStatus()
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.detail || '重定位失败')
+  } finally {
+    relocating.value = false
+  }
+}
 
 async function loadEmailStatus() {
   try {
@@ -97,6 +135,7 @@ async function load() {
   await loadFnRules()
   await loadTemplates()
   await loadEmailStatus()
+  await loadRelocateStatus()
 }
 
 async function save() {
@@ -282,6 +321,50 @@ onMounted(load)
     </el-card>
 
     <el-card shadow="never" class="mb16">
+      <template #header><span>文件关联（移动后重新定位）</span></template>
+      <div class="gray small mb8">
+        归档文件按「分类/年/月」存放在文档根目录。如果你在资源管理器中把已归档文件移动到其他文件夹，
+        系统记录不会消失，但原路径会失效、文件打不开。可在此输入文件的新位置，系统按文件名（或文件哈希）
+        自动找回并重新关联。
+      </div>
+      <el-form label-width="120px">
+        <el-form-item label="文件状态">
+          <el-tag :type="relStatus && relStatus.missing_count > 0 ? 'warning' : 'success'">
+            {{ relStatus ? relStatus.total + ' 条记录，' + relStatus.missing_count + ' 个文件路径失效' : '加载中…' }}
+          </el-tag>
+        </el-form-item>
+        <el-form-item label="搜索目录（可选）">
+          <el-input v-model="relocateSearchRoot" placeholder="文件移动到的文件夹；留空则仅扫描系统文档根目录" />
+          <div class="gray small">例如把「data\documents」整体移到了 D:\我的归档，就填 D:\我的归档</div>
+        </el-form-item>
+        <el-form-item label="操作">
+          <el-button type="primary" :loading="relocating" :disabled="!relStatus || relStatus.missing_count === 0" @click="doRelocate(false)">
+            按文件名重新关联
+          </el-button>
+          <el-button :loading="relocating" :disabled="!relStatus || relStatus.missing_count === 0" @click="doRelocate(true)">
+            按文件哈希精确关联（较慢）
+          </el-button>
+        </el-form-item>
+      </el-form>
+
+      <div v-if="relResult" class="rel-result">
+        <el-alert
+          :type="relResult.failed === 0 ? 'success' : 'warning'"
+          :closable="false"
+          show-icon
+          :title="`关联完成：成功 ${relResult.relinked} 个，未匹配 ${relResult.failed} 个`"
+        />
+        <div v-if="relResult.unmatched.length" class="mt8">
+          <div class="gray small mb8">以下文件未找到，请确认搜索目录正确：</div>
+          <el-table :data="relResult.unmatched" size="small" style="width: 100%">
+            <el-table-column prop="current_filename" label="文件名" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="path" label="原路径" min-width="220" show-overflow-tooltip />
+          </el-table>
+        </div>
+      </div>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
       <template #header><span>文件名规则（命中即直接归档，不解析内容）</span></template>
       <div class="gray small mb8">
         适用业务编码明确的文件，如 <code>SJWLXS</code>=销售合同、<code>SJWLCG</code>=采购合同。命中后直接归档到对应分类、保持原名，零识别消耗。
@@ -432,4 +515,5 @@ code { background: #f0f2f5; padding: 0 4px; border-radius: 3px; }
 .email-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .email-error { flex-basis: 100%; margin-top: 4px; }
 .mr4 { margin-right: 4px; }
+.rel-result { margin-top: 8px; }
 </style>
