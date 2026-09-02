@@ -84,7 +84,7 @@ _AMOUNT_PATTERNS = [
 # 船名：上下文锚定（结算单/货权转移单通常带"船名："，支持数字结尾如 海兴168）
 _VESSEL_CONTEXT = re.compile(
     r"(?:船名|船舶名称|船号)[:：]?\s*"
-    r"([\u4e00-\u9fa5A-Za-z0-9（）()\-]{2,40}?)(?=\s|$|[，,;；。])"
+    r"([\u4e00-\u9fa5A-Za-z0-9 （）()\-]{2,60}?)(?=[，,;；。]|\s*(?:\r?\n|$))"
 )
 # 引号内船名（如 "NIGHTSKY夜空"轮）
 _VESSEL_QUOTED = re.compile(
@@ -354,10 +354,17 @@ def _contract_suffix_m(text: str):
     return None
 
 
+def _clean_vessel(v: str) -> str:
+    # 去掉中文括号别名（如 ZJE OCEAN 1(浙能海 1) -> ZJE OCEAN 1）与残留括号
+    v = re.sub(r"[（(][^）)]*[）)]", "", v)
+    v = v.strip(" ()）(")
+    # 去空白，船名不保留空格，避免文件名含空格
+    return re.sub(r"\s+", "", v)
+
 def _vessel_context_m(text: str):
     m = _VESSEL_CONTEXT.search(text)
     if m:
-        v = m.group(1).strip().rstrip(")）")
+        v = _clean_vessel(m.group(1))
         if v:
             return v, 0.85, "vessel_context", 85.0, SOURCE_RULE
     return None
@@ -366,7 +373,7 @@ def _vessel_context_m(text: str):
 def _vessel_quoted_m(text: str):
     m = _VESSEL_QUOTED.search(text)
     if m:
-        v = m.group(1).strip().rstrip(")）")
+        v = _clean_vessel(m.group(1))
         if v:
             return v, 0.8, "vessel_quoted", 80.0, SOURCE_RULE
     return None
