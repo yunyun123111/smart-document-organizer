@@ -30,3 +30,6 @@ Thumbs.db
 .env.*
 !.env.example
 
+
+# ===== 便携包构建产物 =====
+build_portable/
