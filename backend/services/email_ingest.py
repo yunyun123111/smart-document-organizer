@@ -92,10 +92,38 @@ def _save_processed(ids: set[str]) -> None:
         logger.exception("保存已处理邮件记录失败")
 
 
+def _send_imap_id(m: imaplib.IMAP4) -> None:
+    """登录后发送 IMAP ID 命令（RFC 2971）。
+
+    163/188 邮箱的 "SELECT Unsafe Login" 正是缺少该信息导致。
+    imaplib 的 Commands 表不包含 ID，_simple_command 会直接 KeyError，
+    因此这里手动构造原始命令字节并发送（绕过 Commands 检查）。
+    其他邮箱不支持时静默忽略。
+    """
+    try:
+        tag = m._new_tag()
+        params = (
+            b'"name" "SmartDocumentOrganizer" '
+            b'"version" "1.0.0" '
+            b'"vendor" "smart-document-organizer" '
+            b'"support-email" "support@smartdoc.local"'
+        )
+        m.send(tag + b" ID (" + params + b")\r\n")
+        typ, data = m._get_tagged_response(tag)
+        if typ == "OK":
+            logger.info("IMAP ID 信息已发送（RFC 2971）")
+        else:
+            logger.warning("IMAP ID 服务器未接受: %s %s", typ, data)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("IMAP ID 命令发送失败（忽略，继续）: %s", e)
+
+
 def _connect() -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
     cls = imaplib.IMAP4_SSL if settings.EMAIL_SSL else imaplib.IMAP4
     m = cls(settings.EMAIL_IMAP_HOST, settings.EMAIL_IMAP_PORT)
     m.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
+    # 网易要求登录后、SELECT 前带上 IMAP ID 信息
+    _send_imap_id(m)
     typ, data = m.select("INBOX")
     if typ != "OK":
         # 把服务端原始错误透出，便于定位（如 163 的 Unsafe Login）
