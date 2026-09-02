@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from backend.config import settings
@@ -24,6 +25,11 @@ from backend.models import (
 )
 from backend.schemas.document import DocumentDetail, DocumentListItem
 from backend.schemas.processing import UploadResponse
+from backend.services.document_search import (
+    build_keyword_conditions,
+    match_field_ids,
+    suggest,
+)
 from backend.services.duplicate_service import duplicate_service
 from backend.services.operation_service import log_operation
 from backend.services.processing_service import processing_service
@@ -33,6 +39,9 @@ from backend.utils.hash_utils import sha256_file
 from backend.utils.logger import get_logger
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
+
+_AMOUNT_FIELDS = ("amount", "total_amount", "tax_amount", "price")
+_DATE_FIELDS = ("date", "invoice_date", "ship_date", "bill_date")
 logger = get_logger("api.documents")
 
 
@@ -58,11 +67,16 @@ def list_documents(
     document_type: str | None = None,
     category: str | None = None,
     keyword: str | None = None,
+    contract_no: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
     skip: int = 0,
     limit: int = 200,
     db: Session = Depends(get_db),
 ):
-    """文档列表，支持状态/类型/分类/关键词筛选。"""
+    """文档列表：状态/类型/分类/关键词（含拼音与错别字容错）+ 合同号/金额区间/日期范围。"""
     query = db.query(Document).order_by(Document.created_at.desc())
     if status:
         query = query.filter(Document.status == status)
@@ -80,22 +94,50 @@ def list_documents(
             )
         )
         query = query.filter(Document.id.in_(sub))
-    if keyword:
-        like = f"%{keyword}%"
-        # 文件名 + 文档类型 + 提取字段值
-        field_ids = (
-            db.query(DocumentField.document_id)
-            .filter(DocumentField.field_value.like(like))
+    if keyword and keyword.strip():
+        conds = build_keyword_conditions(db, keyword.strip())
+        query = query.filter(or_(*conds))
+    # ---- 合同号模糊过滤 ----
+    if contract_no:
+        ids = match_field_ids(
+            db, ("contract_no", "contract_number", "invoice_no"),
+            like=contract_no.strip(),
         )
-        query = query.filter(
-            (Document.original_filename.like(like))
-            | (Document.current_filename.like(like))
-            | (Document.document_type.like(like))
-            | (Document.id.in_(field_ids))
+        if ids:
+            query = query.filter(Document.id.in_(ids))
+        else:
+            return []
+    # ---- 金额区间过滤 ----
+    if amount_min is not None or amount_max is not None:
+        ids = match_field_ids(
+            db, _AMOUNT_FIELDS,
+            min_val=amount_min, max_val=amount_max,
         )
-    total = query.count()
+        if ids:
+            query = query.filter(Document.id.in_(ids))
+        else:
+            return []
+    # ---- 日期范围过滤（date 字段 或 created_at）----
+    if date_start or date_end:
+        conds = []
+        field_ids = match_field_ids(
+            db, _DATE_FIELDS, start=date_start, end=date_end,
+        )
+        if field_ids:
+            conds.append(Document.id.in_(field_ids))
+        if date_start:
+            conds.append(Document.created_at >= date_start)
+        if date_end:
+            conds.append(Document.created_at <= f"{date_end} 23:59:59")
+        query = query.filter(or_(*conds))
     docs = query.offset(skip).limit(limit).all()
     return docs
+
+
+@router.get("/suggest")
+def suggest_documents(keyword: str = "", db: Session = Depends(get_db)):
+    """搜索建议：类型 / 公司 / 合同号 / 发票号 / 船名 / 物料 / 文件名。"""
+    return {"suggestions": suggest(db, keyword)}
 
 
 @router.get("/types")

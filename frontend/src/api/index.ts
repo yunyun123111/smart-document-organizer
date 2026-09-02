@@ -123,10 +123,24 @@ export function listDocuments(params: {
   document_type?: string
   category?: string
   keyword?: string
+  contract_no?: string
+  amount_min?: number
+  amount_max?: number
+  date_start?: string
+  date_end?: string
   skip?: number
   limit?: number
 }): Promise<DocumentListItem[]> {
   return http.get('/documents', { params })
+}
+
+export interface SuggestItem {
+  type: string
+  text: string
+}
+
+export function suggestDocuments(keyword: string): Promise<{ suggestions: SuggestItem[] }> {
+  return http.get('/documents/suggest', { params: { keyword } })
 }
 
 export function listDocumentTypes(): Promise<string[]> {

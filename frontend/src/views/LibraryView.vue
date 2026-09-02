@@ -13,8 +13,10 @@ import {
   listDocuments,
   listDocumentTypes,
   renameDocument,
+  suggestDocuments,
   type DocumentDetail,
   type DocumentListItem,
+  type SuggestItem,
 } from '@/api'
 
 const items = ref<DocumentListItem[]>([])
@@ -24,7 +26,22 @@ const keyword = ref('')
 const status = ref('')
 const docType = ref('')
 const category = ref('')
+const contractNo = ref('')
+const amountMin = ref<number | undefined>(undefined)
+const amountMax = ref<number | undefined>(undefined)
+const dateRange = ref<[string, string] | null>(null)
 const docTypes = ref<string[]>([])
+
+// 搜索建议（自动补全）
+async function querySearch(q: string, cb: (items: SuggestItem[]) => void) {
+  if (!q || !q.trim()) return cb([])
+  try {
+    const res = await suggestDocuments(q.trim())
+    cb(res.suggestions)
+  } catch {
+    cb([])
+  }
+}
 const categories = ref<string[]>([])
 const selectedIds = ref<number[]>([])
 const batchLoading = ref(false)
@@ -51,6 +68,11 @@ async function load() {
       status: status.value || undefined,
       document_type: docType.value || undefined,
       category: category.value || undefined,
+      contract_no: contractNo.value || undefined,
+      amount_min: amountMin.value,
+      amount_max: amountMax.value,
+      date_start: dateRange.value ? dateRange.value[0] : undefined,
+      date_end: dateRange.value ? dateRange.value[1] : undefined,
       limit: 200,
     })
   } finally {
@@ -186,6 +208,14 @@ function fmtSize(n: number): string {
   return n + ' B'
 }
 
+function clearFieldFilter() {
+  contractNo.value = ''
+  amountMin.value = undefined
+  amountMax.value = undefined
+  dateRange.value = null
+  load()
+}
+
 onMounted(async () => {
   // 支持从数据看板等入口带筛选跳转：/library?status=xx&type=xx
   const q = route.query
@@ -212,8 +242,56 @@ onMounted(async () => {
           <el-select v-model="category" placeholder="按分类筛选" clearable filterable style="width: 170px" @change="load">
             <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
           </el-select>
-          <el-input v-model="keyword" placeholder="搜索文件名/类型/字段" clearable style="width: 210px" @keyup.enter="load" @clear="load" />
+          <el-autocomplete
+            v-model="keyword"
+            :fetch-suggestions="querySearch"
+            placeholder="搜索（支持拼音/错别字/类型/公司/合同号）"
+            clearable
+            style="width: 250px"
+            @select="(item: SuggestItem) => { keyword = item.text; load() }"
+            @keyup.enter="load"
+            @clear="load"
+          >
+            <template #default="{ item }">
+              <span class="suggest-type">{{ item.type }}</span>
+              <span>{{ item.text }}</span>
+            </template>
+          </el-autocomplete>
           <el-button type="primary" @click="load">搜索</el-button>
+          <el-popover placement="bottom" :width="320" trigger="click">
+            <template #reference>
+              <el-button>字段过滤 <el-icon><ArrowDown /></el-icon></el-button>
+            </template>
+            <div class="field-filter">
+              <div class="ff-row">
+                <span class="ff-label">合同号</span>
+                <el-input v-model="contractNo" placeholder="如 XS2026" clearable size="small" @keyup.enter="load" />
+              </div>
+              <div class="ff-row">
+                <span class="ff-label">金额</span>
+                <el-input-number v-model="amountMin" :min="0" :controls="false" placeholder="最小" size="small" style="width: 110px" />
+                <span class="ff-sep">—</span>
+                <el-input-number v-model="amountMax" :min="0" :controls="false" placeholder="最大" size="small" style="width: 110px" />
+              </div>
+              <div class="ff-row">
+                <span class="ff-label">日期</span>
+                <el-date-picker
+                  v-model="dateRange"
+                  type="daterange"
+                  value-format="YYYY-MM-DD"
+                  range-separator="至"
+                  start-placeholder="开始日期"
+                  end-placeholder="结束日期"
+                  size="small"
+                  style="width: 210px"
+                />
+              </div>
+              <div class="ff-actions">
+                <el-button size="small" @click="clearFieldFilter">清空</el-button>
+                <el-button size="small" type="primary" @click="load">应用</el-button>
+              </div>
+            </div>
+          </el-popover>
         </div>
       </div>
     </template>
@@ -404,4 +482,33 @@ onMounted(async () => {
 }
 .gray { color: #909399; }
 .small { font-size: 12px; }
+<style scoped>
+.suggest-type {
+  display: inline-block;
+  width: 52px;
+  color: #909399;
+  font-size: 12px;
+  margin-right: 8px;
+}
+.field-filter .ff-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.field-filter .ff-label {
+  width: 52px;
+  color: #606266;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.field-filter .ff-sep {
+  margin: 0 6px;
+  color: #909399;
+}
+.field-filter .ff-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
 </style>
