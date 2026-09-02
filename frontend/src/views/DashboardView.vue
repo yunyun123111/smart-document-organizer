@@ -1,22 +1,115 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { getDashboardStats, type DashboardStats } from '@/api'
+import * as echarts from 'echarts'
+import {
+  getDashboardStats,
+  getDashboardTrends,
+  type DashboardStats,
+  type DashboardTrends,
+} from '@/api'
 
 const router = useRouter()
 const stats = ref<DashboardStats | null>(null)
+const trends = ref<DashboardTrends | null>(null)
 const loading = ref(false)
+
+const trendChartRef = ref<HTMLDivElement>()
+const rateChartRef = ref<HTMLDivElement>()
+let trendChart: echarts.ECharts | null = null
+let rateChart: echarts.ECharts | null = null
 
 async function load() {
   loading.value = true
   try {
     stats.value = await getDashboardStats()
+    trends.value = await getDashboardTrends()
+    await nextTick()
+    renderCharts()
   } finally {
     loading.value = false
   }
 }
 
-onMounted(load)
+function renderCharts() {
+  if (!trends.value) return
+  renderTrendChart()
+  renderRateChart()
+}
+
+function renderTrendChart() {
+  if (!trendChartRef.value) return
+  trendChart?.dispose()
+  trendChart = echarts.init(trendChartRef.value)
+  const d = trends.value!.daily
+  const dates = d.map((x) => x.date.slice(5))
+  trendChart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['新增', '归档', '待确认', '失败'] },
+    grid: { left: 40, right: 16, top: 36, bottom: 28 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: { type: 'value', minInterval: 1 },
+    series: [
+      { name: '新增', type: 'bar', data: d.map((x) => x.new), itemStyle: { color: '#409eff' } },
+      { name: '归档', type: 'bar', data: d.map((x) => x.archived), itemStyle: { color: '#67c23a' } },
+      { name: '待确认', type: 'bar', data: d.map((x) => x.need_review), itemStyle: { color: '#e6a23c' } },
+      { name: '失败', type: 'bar', data: d.map((x) => x.failed), itemStyle: { color: '#f56c6c' } },
+    ],
+  })
+}
+
+function renderRateChart() {
+  if (!rateChartRef.value) return
+  rateChart?.dispose()
+  rateChart = echarts.init(rateChartRef.value)
+  const d = trends.value!.daily
+  const o = trends.value!.ocr_daily
+  const dates = d.map((x) => x.date.slice(5))
+  const success = d.map((x) => (x.success_rate == null ? null : +(x.success_rate * 100).toFixed(1)))
+  const ocrFail = o.map((x) => (x.fail_rate == null ? null : +(x.fail_rate * 100).toFixed(1)))
+  rateChart.setOption({
+    tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '—' : v + '%') },
+    legend: { data: ['识别成功率', 'OCR 失败率'] },
+    grid: { left: 40, right: 16, top: 36, bottom: 28 },
+    xAxis: { type: 'category', data: dates },
+    yAxis: { type: 'value', axisLabel: { formatter: '{value}%' }, max: 100 },
+    series: [
+      {
+        name: '识别成功率',
+        type: 'line',
+        smooth: true,
+        connectNulls: true,
+        data: success,
+        itemStyle: { color: '#67c23a' },
+        areaStyle: { opacity: 0.1 },
+      },
+      {
+        name: 'OCR 失败率',
+        type: 'line',
+        smooth: true,
+        connectNulls: true,
+        data: ocrFail,
+        itemStyle: { color: '#f56c6c' },
+      },
+    ],
+  })
+}
+
+function onResize() {
+  trendChart?.resize()
+  rateChart?.resize()
+}
+
+onMounted(() => {
+  load()
+  window.addEventListener('resize', onResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  trendChart?.dispose()
+  rateChart?.dispose()
+})
 
 const cards = [
   { key: 'total_documents', label: '文档总数', color: '#409eff', icon: '📄', to: '/library' },
@@ -33,10 +126,36 @@ const typeColors = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9c2
 function typeColor(i: number) {
   return typeColors[i % typeColors.length]
 }
+
+function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
+  if (level === 'error') return 'error'
+  if (level === 'warning') return 'warning'
+  return 'info'
+}
 </script>
 
 <template>
   <div v-loading="loading">
+    <!-- 异常提醒 -->
+    <el-card v-if="trends && trends.alerts.length" shadow="never" class="section alert-card">
+      <template #header><span>⚠️ 异常提醒</span></template>
+      <el-alert
+        v-for="(a, i) in trends.alerts"
+        :key="i"
+        :type="alertType(a.level)"
+        :closable="false"
+        show-icon
+        class="alert-item"
+      >
+        <template #title>
+          <span>{{ a.message }}</span>
+          <el-link v-if="a.link" :type="alertType(a.level)" class="alert-link" @click="go(a.link)">
+            查看 →
+          </el-link>
+        </template>
+      </el-alert>
+    </el-card>
+
     <el-row :gutter="16">
       <el-col v-for="c in cards" :key="c.key" :xs="12" :sm="12" :md="6">
         <el-card shadow="hover" class="stat-card" @click="go(c.to)">
@@ -50,6 +169,26 @@ function typeColor(i: number) {
             {{ c.label }}
             <el-icon class="go-icon"><ArrowRight /></el-icon>
           </div>
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- 趋势图 -->
+    <el-row :gutter="16" class="section">
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header>
+            <div class="card-head">
+              <span>每日新增趋势（近 {{ trends?.days ?? 14 }} 天）</span>
+            </div>
+          </template>
+          <div ref="trendChartRef" class="chart"></div>
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header><span>识别成功率 / OCR 失败率趋势</span></template>
+          <div ref="rateChartRef" class="chart"></div>
         </el-card>
       </el-col>
     </el-row>
@@ -162,6 +301,22 @@ function typeColor(i: number) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.alert-card {
+  border-color: #f3d19e;
+}
+.alert-item {
+  margin-bottom: 8px;
+}
+.alert-item:last-child {
+  margin-bottom: 0;
+}
+.alert-link {
+  margin-left: 12px;
+}
+.chart {
+  width: 100%;
+  height: 280px;
 }
 .type-list {
   display: flex;

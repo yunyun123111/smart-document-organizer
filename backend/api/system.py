@@ -15,6 +15,8 @@ from backend.models import (
     ProcessingJob,
 )
 
+from backend.services.dashboard_service import get_dashboard_trends
+
 router = APIRouter(prefix="/api/system", tags=["system"])
 
 
@@ -98,3 +100,10 @@ def dashboard_stats(db: Session = Depends(get_db)):
         "ai_enabled": settings.AI_ENABLED and bool(settings.AI_BASE_URL),
         "ocr_enabled": settings.OCR_ENABLED,
     }
+
+
+@router.get("/dashboard/trends")
+def dashboard_trends(db: Session = Depends(get_db)):
+    """Dashboard 趋势：每日新增/识别成功率/OCR 失败率 + 异常提醒。"""
+    return get_dashboard_trends(db)
+

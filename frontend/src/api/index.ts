@@ -19,6 +19,45 @@ export function getDashboardStats(): Promise<DashboardStats> {
   return http.get('/system/dashboard/stats')
 }
 
+export interface TrendDaily {
+  date: string
+  new: number
+  archived: number
+  need_review: number
+  processed: number
+  failed: number
+  duplicate: number
+  success_rate: number | null
+  fail_count: number
+}
+
+export interface TrendOcr {
+  date: string
+  total: number
+  failed: number
+  fail_rate: number | null
+}
+
+export interface DashboardAlert {
+  level: string
+  kind: string
+  type: string | null
+  message: string
+  link: string
+}
+
+export interface DashboardTrends {
+  days: number
+  daily: TrendDaily[]
+  ocr_daily: TrendOcr[]
+  alerts: DashboardAlert[]
+}
+
+export function getDashboardTrends(): Promise<DashboardTrends> {
+  return http.get('/system/dashboard/trends')
+}
+
+
 // ---------- 批量整理 ----------
 export interface ProcessingJob {
   id: number
