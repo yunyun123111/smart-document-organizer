@@ -12,6 +12,7 @@ import {
   type ReviewDetail,
   type ReviewGroup,
 } from '@/api'
+import DocumentPreview from '@/components/DocumentPreview.vue'
 
 const groups = ref<ReviewGroup[]>([])
 const loading = ref(false)
@@ -242,10 +243,18 @@ onMounted(load)
       </div>
     </el-card>
 
-    <!-- 单份审核抽屉 -->
-    <el-drawer v-model="drawer" title="人工审核" size="560px">
-      <div v-if="detail" v-loading="saving">
-        <el-descriptions :column="1" border class="mb16">
+    <!-- 单份审核抽屉：左预览 + 右核对修改 分屏 -->
+    <el-drawer v-model="drawer" title="人工审核" size="min(1200px, 96vw)">
+      <div v-if="detail" v-loading="saving" class="review-split">
+        <div class="review-left">
+          <DocumentPreview
+            :doc-id="detail.document.id"
+            :name="detail.document.current_filename || detail.document.original_filename"
+            :file-type="detail.document.file_type"
+          />
+        </div>
+        <div class="review-right">
+          <el-descriptions :column="1" border class="mb16">
           <el-descriptions-item label="原文件名">{{ detail.document.original_filename }}</el-descriptions-item>
           <el-descriptions-item label="大小">{{ fmtSize(detail.document.file_size) }}</el-descriptions-item>
           <el-descriptions-item label="识别置信度">
@@ -273,9 +282,10 @@ onMounted(load)
         <el-input v-model="customFilename" :placeholder="detail.suggested_filename" class="mb16" />
         <div class="gray small">留空则按分类模板自动生成：{{ detail.templates.category }}</div>
 
-        <div class="actions">
-          <el-button type="success" @click="confirmArchive">✓ 确认归档</el-button>
-          <el-button @click="skip">跳过</el-button>
+          <div class="actions">
+            <el-button type="success" @click="confirmArchive">✓ 确认归档</el-button>
+            <el-button @click="skip">跳过</el-button>
+          </div>
         </div>
       </div>
     </el-drawer>
@@ -354,4 +364,36 @@ onMounted(load)
 }
 .gray { color: #909399; }
 .small { font-size: 12px; }
+.review-split {
+  display: flex;
+  gap: 16px;
+  height: calc(100vh - 120px);
+}
+.review-left {
+  flex: 1 1 55%;
+  min-width: 0;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f5f6f8;
+}
+.review-right {
+  flex: 1 1 45%;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+@media (max-width: 768px) {
+  .review-split {
+    flex-direction: column;
+    height: auto;
+  }
+  .review-left {
+    flex: none;
+    height: 45vh;
+  }
+  .review-right {
+    flex: none;
+  }
+}
 </style>

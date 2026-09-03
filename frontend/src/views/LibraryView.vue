@@ -3,10 +3,10 @@ import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
+import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   batchDeleteDocuments,
   deleteDocument,
-  downloadDocumentFile,
   exportDocumentsZip,
   getDocument,
   listDocumentCategories,
@@ -207,15 +207,10 @@ async function openFile(id: number) {
   }
 }
 
-// ---- 文档预览（axios 带 token 下载为 Blob，弹窗内展示）----
+// ---- 文档预览（通用组件：PDF 用 pdf.js 沉浸式渲染，图片原图展示）----
 const previewDialog = ref(false)
-const previewLoading = ref(false)
-const previewUrl = ref('')
-const previewName = ref('')
-const previewExt = ref('')
+const previewDoc = ref<{ id: number; name: string; ext: string } | null>(null)
 
-const PREVIEW_IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp']
-const PREVIEW_TEXT = ['txt', 'md', 'csv', 'json', 'log', 'xml', 'html']
 const PREVIEW_BLOCK = ['doc', 'docx', 'xls', 'xlsx', 'zip', 'rar', '7z', 'exe']
 
 async function preview(row: DocumentListItem) {
@@ -224,26 +219,12 @@ async function preview(row: DocumentListItem) {
     ElMessage.warning('该格式不支持在线预览，请用「打开」查看')
     return
   }
-  previewLoading.value = true
-  try {
-    const blob = await downloadDocumentFile(row.id)
-    if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
-    previewUrl.value = URL.createObjectURL(blob)
-    previewName.value = row.current_filename || row.original_filename
-    previewExt.value = ext
-    previewDialog.value = true
-  } catch (e: any) {
-    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
-  } finally {
-    previewLoading.value = false
+  previewDoc.value = {
+    id: row.id,
+    name: row.current_filename || row.original_filename,
+    ext,
   }
-}
-
-function onPreviewClosed() {
-  if (previewUrl.value) {
-    URL.revokeObjectURL(previewUrl.value)
-    previewUrl.value = ''
-  }
+  previewDialog.value = true
 }
 
 function fmtSize(n: number): string {
@@ -456,17 +437,30 @@ onMounted(async () => {
   </el-drawer>
 
   <!-- 文档预览弹窗 -->
-  <el-dialog v-model="previewDialog" :title="previewName" width="82%" top="4vh" append-to-body @closed="onPreviewClosed">
-    <div v-loading="previewLoading" class="preview-body">
-      <iframe v-if="previewExt === 'pdf'" :src="previewUrl" class="preview-frame" />
-      <img v-else-if="PREVIEW_IMAGE.includes(previewExt)" :src="previewUrl" class="preview-img" />
-      <iframe v-else-if="PREVIEW_TEXT.includes(previewExt)" :src="previewUrl" class="preview-frame" />
-      <el-empty v-else description="该格式不支持在线预览" :image-size="80" />
-    </div>
+  <el-dialog
+    v-model="previewDialog"
+    :title="previewDoc?.name || '文档预览'"
+    width="86%"
+    top="4vh"
+    append-to-body
+    class="preview-dialog"
+  >
+    <DocumentPreview
+      v-if="previewDoc"
+      :doc-id="previewDoc.id"
+      :name="previewDoc.name"
+      :file-type="previewDoc.ext"
+    />
   </el-dialog>
 </template>
 
 <style scoped>
+/* 文档预览弹窗：给 DocumentPreview 100% 高度提供容器高度 */
+.preview-dialog :deep(.el-dialog__body) {
+  height: calc(92vh - 70px);
+  padding: 0;
+  overflow: hidden;
+}
 .head {
   display: flex;
   justify-content: space-between;
