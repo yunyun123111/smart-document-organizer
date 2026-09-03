@@ -23,6 +23,7 @@ from backend.models import (
     STATUS_FAILED,
     STATUS_NEED_REVIEW,
     STATUS_PROCESSED,
+    STATUS_RECYCLED,
     Document,
     OperationLog,
 )
@@ -66,6 +67,7 @@ def build_daily(db: Session, days: int = 14) -> list[dict]:
             Document.status,
             func.count(Document.id),
         )
+        .filter(Document.status != STATUS_RECYCLED)
         .group_by("d", Document.status)
         .all()
     )
@@ -133,7 +135,10 @@ def detect_alerts(db: Session, days: int = 14) -> list[dict]:
             Document.document_type,
             func.count(Document.id),
         )
-        .filter(Document.created_at >= datetime.combine(prev7_start, datetime.min.time()))
+        .filter(
+            Document.created_at >= datetime.combine(prev7_start, datetime.min.time()),
+            Document.status != STATUS_RECYCLED,
+        )
         .group_by("d", Document.document_type)
         .all()
     )

@@ -21,6 +21,7 @@ def missing_documents(db) -> list[dict]:
     rows = (
         db.query(Document.id, Document.original_filename,
                  Document.current_filename, Document.current_path)
+        .filter(Document.status != "recycled")  # 回收站文件不参与关联找回
         .all()
     )
     for doc_id, original, current, path in rows:

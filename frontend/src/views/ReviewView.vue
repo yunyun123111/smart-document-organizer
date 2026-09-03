@@ -85,9 +85,9 @@ async function groupRemove(g: ReviewGroup) {
   }
   try {
     await ElMessageBox.confirm(
-      `将从系统移除「${g.group_label}」的 ${ids.length} 个文件（记录和磁盘文件一并删除，不可恢复），确定？`,
+      `确定要移除「${g.group_label}」的 ${ids.length} 个文件吗？\n文件不会立即永久删除，而是会移动到回收站，之后可以恢复。`,
       '批量移除',
-      { type: 'warning', confirmButtonText: '确认移除', cancelButtonText: '取消' },
+      { type: 'warning', confirmButtonText: '移入回收站', cancelButtonText: '取消' },
     )
   } catch {
     return
@@ -95,7 +95,7 @@ async function groupRemove(g: ReviewGroup) {
   groupBusy.value = g.group_key
   try {
     const res = await batchDeleteDocuments(ids)
-    ElMessage.success(`已移除 ${res.deleted_count} 个文件`)
+    ElMessage.success(`已移入回收站 ${res.deleted_count} 个文件`)
     await load()
   } finally {
     groupBusy.value = null
@@ -209,7 +209,7 @@ onMounted(load)
                 :disabled="selCount(g.group_key) === 0"
                 :loading="groupBusy === g.group_key"
                 @click="groupRemove(g)"
-              >移除（{{ selCount(g.group_key) }}）</el-button>
+              >移入回收站（{{ selCount(g.group_key) }}）</el-button>
             </div>
           </div>
           <el-table

@@ -21,6 +21,8 @@ def start_processing(req: ProcessingStartRequest, db: Session = Depends(get_db))
         job = processing_service.start_job(req.source_dir)
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return db.get(ProcessingJob, job.id)
 
 

@@ -269,11 +269,26 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 迁移列表：[(version, name, upgrade_fn)]
 # upgrade_fn(db: Session) -> None，须幂等。
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = []
+
+
+def _migrate_create_recycle_bin(db: Session) -> None:
+    """V1.5-01: 新增 recycle_bin 表（回收站）。幂等。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS recycle_bin (id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL, original_filename VARCHAR(512) NOT NULL, current_filename VARCHAR(512) NOT NULL DEFAULT '', original_path VARCHAR(1024) NOT NULL DEFAULT '', current_path VARCHAR(1024) NOT NULL DEFAULT '', recycle_path VARCHAR(1024) NOT NULL DEFAULT '', file_hash VARCHAR(64) NOT NULL DEFAULT '', file_size INTEGER NOT NULL DEFAULT 0, file_type VARCHAR(20) NOT NULL DEFAULT '', document_type VARCHAR(200) NOT NULL DEFAULT '', category_path VARCHAR(500) NOT NULL DEFAULT '', original_status VARCHAR(20) NOT NULL DEFAULT '', deleted_reason VARCHAR(500) NOT NULL DEFAULT '', original_file_missing BOOLEAN NOT NULL DEFAULT 0, deleted_at DATETIME NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_recycle_bin_document_id ON recycle_bin (document_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_recycle_bin_deleted_at ON recycle_bin (deleted_at)"))
+    db.commit()
+
+
+MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
+    (2, "create recycle_bin", _migrate_create_recycle_bin),
+]
 
 
 def _ensure_schema_migrations(db: Session) -> None:
@@ -335,6 +350,14 @@ def run_migrations(db: Session) -> None:
             _record_migration(db, 0, "fresh baseline")
             logger.info("数据库迁移：新库 fresh baseline=%d", base)
         applied = {v for v, _, _ in MIGRATIONS if v <= base}
+    else:
+        # fresh baseline 库由 create_all 维护最新表结构，所有迁移视为已应用；
+        # 否则重复运行 run_migrations 会把"逻辑跳过"的迁移误执行（幂等被破坏）
+        row = db.execute(
+            text(f"SELECT name FROM {_SCHEMA_MIGRATIONS_TABLE} WHERE version=0")
+        ).fetchone()
+        if row is not None and row[0] == "fresh baseline":
+            applied = {v for v, _, _ in MIGRATIONS if v <= SCHEMA_VERSION}
 
     for v, name, fn in MIGRATIONS:
         if v <= SCHEMA_VERSION and v not in applied:

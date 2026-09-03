@@ -60,6 +60,10 @@ class ProcessingService:
             raise RuntimeError("已有整理任务正在运行，请等待其完成后再开始")
         src = Path(source_dir) if source_dir else settings.inbox_root
         src = src.resolve()
+        # 回收站目录绝不能作为待整理目录，避免把已删除文件重新识别归档
+        recycle_root = settings.recycle_bin_root.resolve()
+        if src == recycle_root or recycle_root in src.parents:
+            raise ValueError("回收站目录不能作为待整理目录")
         if not src.exists():
             raise FileNotFoundError(f"待整理目录不存在: {src}")
 

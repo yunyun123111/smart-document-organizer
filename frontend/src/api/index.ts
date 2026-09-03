@@ -662,3 +662,58 @@ export interface ConfigCheckResult {
 export function getConfigCheck(): Promise<ConfigCheckResult> {
   return http.get('/system/config-check')
 }
+
+// ---------- 回收站（V1.5-01 删除安全化） ----------
+export interface RecycleBinItem {
+  id: number
+  document_id: number
+  original_filename: string
+  current_filename: string
+  original_path: string
+  recycle_path: string
+  file_hash: string
+  file_size: number
+  file_type: string
+  document_type: string
+  category_path: string
+  original_status: string
+  deleted_reason: string
+  original_file_missing: boolean
+  file_exists: boolean
+  deleted_at?: string
+}
+
+export function listRecycleBin(): Promise<{ ok: boolean; items: RecycleBinItem[] }> {
+  return http.get('/recycle-bin')
+}
+
+export function restoreRecycleItem(id: number): Promise<{ ok: boolean; message: string }> {
+  return http.post(`/recycle-bin/${id}/restore`)
+}
+
+export function batchRestoreRecycle(ids: number[]): Promise<{
+  ok: boolean
+  restored_count: number
+  failed_count: number
+  restored: number[]
+  errors: string[]
+}> {
+  return http.post('/recycle-bin/batch-restore', { ids })
+}
+
+export function permanentDeleteRecycleItem(id: number): Promise<{ ok: boolean; message: string }> {
+  return http.delete(`/recycle-bin/${id}`)
+}
+
+export function batchPermanentDeleteRecycle(ids: number[]): Promise<{
+  ok: boolean
+  deleted_count: number
+  failed_count: number
+  errors: string[]
+}> {
+  return http.post('/recycle-bin/batch-delete', { ids })
+}
+
+export function emptyRecycleBin(): Promise<{ ok: boolean; ok_count: number; failed: number; errors: string[] }> {
+  return http.post('/recycle-bin/empty')
+}

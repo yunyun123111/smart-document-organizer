@@ -28,6 +28,12 @@ const router = createRouter({
       meta: { title: '文档库' },
     },
     {
+      path: '/recycle-bin',
+      name: 'recycle-bin',
+      component: () => import('@/views/RecycleBinView.vue'),
+      meta: { title: '回收站' },
+    },
+    {
       path: '/categories',
       name: 'categories',
       component: () => import('@/views/CategoryView.vue'),

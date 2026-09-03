@@ -107,9 +107,9 @@ async function batchRemove() {
   }
   try {
     await ElMessageBox.confirm(
-      `确认删除选中的 ${selectedIds.value.length} 个文件？\n将同时删除磁盘文件与记录，不可恢复。`,
-      '批量删除',
-      { type: 'warning' },
+      `确定要删除选中的 ${selectedIds.value.length} 个文件吗？\n文件不会立即永久删除，而是会移动到回收站。你可以之后从回收站恢复。`,
+      '批量移入回收站',
+      { type: 'warning', confirmButtonText: '移入回收站', cancelButtonText: '取消' },
     )
   } catch {
     return
@@ -117,7 +117,7 @@ async function batchRemove() {
   batchLoading.value = true
   try {
     const res = await batchDeleteDocuments(selectedIds.value)
-    ElMessage.success(`已删除 ${res.deleted_count} 个文件`)
+    ElMessage.success(`已移入回收站 ${res.deleted_count} 个文件`)
     await load()
     await loadFilters()
   } finally {
@@ -146,12 +146,16 @@ async function open(id: number) {
 
 async function remove(row: DocumentListItem) {
   try {
-    await ElMessageBox.confirm(`确认删除「${row.original_filename}」？`, '删除', { type: 'warning' })
+    await ElMessageBox.confirm(
+      `确定要删除「${row.original_filename}」吗？\n文件不会立即永久删除，而是会移动到回收站，之后可以恢复。`,
+      '移入回收站',
+      { type: 'warning', confirmButtonText: '移入回收站', cancelButtonText: '取消' },
+    )
   } catch {
     return
   }
   await deleteDocument(row.id)
-  ElMessage.success('已删除')
+  ElMessage.success('已移入回收站')
   load()
 }
 
@@ -359,7 +363,7 @@ onMounted(async () => {
         :disabled="selectedIds.length === 0"
         :loading="batchLoading"
         @click="batchRemove"
-      >批量删除（{{ selectedIds.length }}）</el-button>
+      >批量移入回收站（{{ selectedIds.length }}）</el-button>
       <span v-if="selectedIds.length" class="gray small">已选 {{ selectedIds.length }} 项</span>
     </div>
 

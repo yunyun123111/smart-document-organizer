@@ -11,6 +11,7 @@ from backend.models import (
     JOB_RUNNING,
     STATUS_ARCHIVED,
     STATUS_NEED_REVIEW,
+    STATUS_RECYCLED,
     Document,
     ProcessingJob,
 )
@@ -50,7 +51,13 @@ def info():
 @router.get("/dashboard/stats")
 def dashboard_stats(db: Session = Depends(get_db)):
     """Dashboard 统计：总文档/已归档/待审核/今日处理/运行中任务。"""
-    total_documents = db.query(func.count(Document.id)).scalar() or 0
+    # 统计排除回收站文件
+    total_documents = (
+        db.query(func.count(Document.id))
+        .filter(Document.status != STATUS_RECYCLED)
+        .scalar()
+        or 0
+    )
     total_archived = (
         db.query(func.count(Document.id)).filter(Document.status == STATUS_ARCHIVED).scalar() or 0
     )
@@ -65,7 +72,10 @@ def dashboard_stats(db: Session = Depends(get_db)):
     )
     today_total = (
         db.query(func.count(Document.id))
-        .filter(func.date(Document.created_at) == func.date("now", "localtime"))
+        .filter(
+            func.date(Document.created_at) == func.date("now", "localtime"),
+            Document.status != STATUS_RECYCLED,
+        )
         .scalar()
         or 0
     )
@@ -82,6 +92,7 @@ def dashboard_stats(db: Session = Depends(get_db)):
     # 各类型文件数（看板类型分布，未识别统一归为"未识别"）
     rows = (
         db.query(Document.document_type, func.count(Document.id))
+        .filter(Document.status != STATUS_RECYCLED)
         .group_by(Document.document_type)
         .all()
     )

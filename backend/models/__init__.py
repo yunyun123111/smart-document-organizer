@@ -11,6 +11,7 @@ from backend.models.document import (
     STATUS_PROCESSED,
     STATUS_PROCESSING,
     STATUS_SKIPPED,
+    STATUS_RECYCLED,
     Document,
 )
 from backend.models.filename_rule import FilenameRule
@@ -27,11 +28,14 @@ from backend.models.operation_log import (
     OP_ARCHIVE,
     OP_CLASSIFY,
     OP_DELETE,
+    OP_DELETE_TO_RECYCLE,
     OP_IMPORT,
     OP_MOVE,
     OP_OCR,
     OP_PARSE,
     OP_RENAME,
+    OP_RESTORE_FROM_RECYCLE,
+    OP_PERMANENT_DELETE,
     OP_UNDO,
     OP_USER_EDIT,
     RESULT_FAILED,
@@ -48,6 +52,7 @@ from backend.models.processing_job import (
 from backend.models.rename_template import RenameTemplate
 from backend.models.recognition_template import RecognitionTemplate
 from backend.models.document_sample import DocumentSample
+from backend.models.recycle_bin import RecycleBinItem
 from backend.models.rule import ALL_MATCH_TYPES, MATCH_CONTAINS, MATCH_EXACT, MATCH_REGEX, Rule
 
 __all__ = [
@@ -61,6 +66,7 @@ __all__ = [
     "RenameTemplate",
     "RecognitionTemplate",
     "DocumentSample",
+    "RecycleBinItem",
     "ProcessingJob",
     "OperationLog",
     # 状态 / 来源 / 操作类型 / 匹配类型
@@ -73,6 +79,7 @@ __all__ = [
     "STATUS_ARCHIVED",
     "STATUS_DUPLICATE",
     "STATUS_SKIPPED",
+    "STATUS_RECYCLED",
     "ALL_SOURCES",
     "SOURCE_RULE",
     "SOURCE_OCR",
@@ -88,6 +95,9 @@ __all__ = [
     "OP_ARCHIVE",
     "OP_USER_EDIT",
     "OP_DELETE",
+    "OP_DELETE_TO_RECYCLE",
+    "OP_RESTORE_FROM_RECYCLE",
+    "OP_PERMANENT_DELETE",
     "OP_UNDO",
     "RESULT_OK",
     "RESULT_FAILED",

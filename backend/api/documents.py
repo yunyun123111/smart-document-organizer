@@ -23,6 +23,7 @@ from backend.models import (
     SOURCE_USER,
     STATUS_NEED_REVIEW,
     STATUS_PROCESSING,
+    STATUS_RECYCLED,
     Document,
     DocumentField,
 )
@@ -36,6 +37,7 @@ from backend.services.document_search import (
 from backend.services.duplicate_service import duplicate_service
 from backend.services.relocate_service import missing_documents, relocate
 from backend.services.operation_service import log_operation
+from backend.services.recycle_service import recycle_service
 from backend.services.processing_service import processing_service
 from backend.utils.file_utils import get_file_type, get_mime_type
 from backend.utils.filename_utils import safe_filename, unique_filename
@@ -81,7 +83,8 @@ def list_documents(
     db: Session = Depends(get_db),
 ):
     """文档列表：状态/类型/分类/关键词（含拼音与错别字容错）+ 合同号/金额区间/日期范围。"""
-    query = db.query(Document).order_by(Document.created_at.desc())
+    # 回收站文件不进入正常文档库（回收站走独立 /api/recycle-bin 页面）
+    query = db.query(Document).filter(Document.status != STATUS_RECYCLED).order_by(Document.created_at.desc())
     if status:
         query = query.filter(Document.status == status)
     if document_type:
@@ -201,17 +204,26 @@ def suggest_documents(keyword: str = "", db: Session = Depends(get_db)):
 
 @router.get("/types")
 def list_document_types(db: Session = Depends(get_db)):
-    """返回全部文档类型（供筛选下拉）。"""
-    rows = db.query(Document.document_type).distinct().all()
+    """返回全部文档类型（供筛选下拉，排除回收站）。"""
+    rows = (
+        db.query(Document.document_type)
+        .filter(Document.status != STATUS_RECYCLED)
+        .distinct()
+        .all()
+    )
     return sorted({r[0] for r in rows if r[0]})
 
 
 @router.get("/categories")
 def list_document_categories(db: Session = Depends(get_db)):
-    """返回全部归档分类路径（供筛选下拉）。"""
+    """返回全部归档分类路径（供筛选下拉，排除回收站）。"""
     rows = (
         db.query(DocumentField.field_value)
-        .filter(DocumentField.field_name == "suggested_category")
+        .join(Document, Document.id == DocumentField.document_id)
+        .filter(
+            DocumentField.field_name == "suggested_category",
+            Document.status != STATUS_RECYCLED,
+        )
         .distinct()
         .all()
     )
@@ -224,32 +236,38 @@ class BatchDeleteRequest(BaseModel):
 
 @router.post("/batch-delete")
 def batch_delete_documents(req: BatchDeleteRequest, db: Session = Depends(get_db)):
-    """批量删除文档（记录 + 磁盘文件）。"""
+    """批量删除文档 -> 批量移入回收站（不再物理删除，可恢复）。"""
     deleted: list[int] = []
     missing: list[int] = []
+    recycled_count = 0
+    failed_count = 0
+    errors: list[str] = []
     for doc_id in req.doc_ids:
         doc = db.get(Document, doc_id)
         if not doc:
             missing.append(doc_id)
             continue
-        path = Path(doc.current_path or doc.original_path)
-        existed = path.is_file()
-        if existed:
-            log_operation(
-                db,
-                OP_DELETE,
-                old_path=str(path),
-                new_path="",
-                document_id=doc.id,
-                result=RESULT_OK,
-                error_message="批量删除，记录与磁盘文件一并删除，不可撤销",
-            )
-            path.unlink(missing_ok=True)
-        db.delete(doc)
-        deleted.append(doc_id)
-    db.commit()
-    logger.info("批量删除文档: %d 条（缺失 %d）", len(deleted), len(missing))
-    return {"ok": True, "deleted_count": len(deleted), "missing_count": len(missing)}
+        if doc.status == STATUS_RECYCLED:
+            continue  # 已在回收站，跳过
+        res = recycle_service.move_to_recycle(db, doc, reason="批量删除")
+        if res.success:
+            deleted.append(doc_id)
+            if res.file_moved:
+                recycled_count += 1
+        else:
+            failed_count += 1
+            errors.append(f"#{doc_id}: {res.error}")
+    logger.info(
+        "批量移入回收站: %d 条（缺失 %d，失败 %d）", len(deleted), len(missing), failed_count
+    )
+    return {
+        "ok": True,
+        "deleted_count": len(deleted),
+        "missing_count": len(missing),
+        "recycled_count": recycled_count,
+        "failed_count": failed_count,
+        "errors": errors,
+    }
 
 
 class ExportZipRequest(BaseModel):
@@ -438,24 +456,21 @@ def delete_document(doc_id: int, db: Session = Depends(get_db)):
     doc = db.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
-    path = Path(doc.current_path or doc.original_path)
-    existed = path.is_file()
-    if existed:
-        # 删除属于不可逆操作：先记审计日志，保证事后可追溯（规格书第六节）
-        log_operation(
-            db,
-            OP_DELETE,
-            old_path=str(path),
-            new_path="",
-            document_id=doc.id,
-            result=RESULT_OK,
-            error_message="文档记录与磁盘文件一并删除，不可撤销",
-        )
-        path.unlink(missing_ok=True)
-    db.delete(doc)
-    db.commit()
-    logger.info("删除文档: %s (磁盘文件%s)", path.name, "已删除" if existed else "不存在")
-    return {"ok": True, "file_deleted": existed}
+    if doc.status == STATUS_RECYCLED:
+        raise HTTPException(status_code=400, detail="该文档已在回收站")
+    res = recycle_service.move_to_recycle(db, doc, reason="用户删除")
+    if not res.success:
+        raise HTTPException(status_code=400, detail=res.error)
+    logger.info(
+        "移入回收站: doc#%s %s (文件%s)",
+        doc.id, doc.original_filename, "已移动" if res.file_moved else "缺失",
+    )
+    return {
+        "ok": True,
+        "recycled": True,
+        "recycle_id": res.recycle_id,
+        "file_moved": res.file_moved,
+    }
 
 
 @router.post("/upload", response_model=UploadResponse)

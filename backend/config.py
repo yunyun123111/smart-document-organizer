@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     DOCUMENT_ROOT: str = str(BASE_DIR / "data/documents")
     INBOX_ROOT: str = str(BASE_DIR / "data/inbox")
     TEMP_DIR: str = str(BASE_DIR / "data/temp")
+    RECYCLE_BIN_ROOT: str = str(BASE_DIR / "data/recycle_bin")
 
     # 日志
     LOG_LEVEL: str = "INFO"
@@ -92,6 +93,10 @@ class Settings(BaseSettings):
         return Path(self.TEMP_DIR)
 
     @property
+    def recycle_bin_root(self) -> Path:
+        return Path(self.RECYCLE_BIN_ROOT)
+
+    @property
     def log_dir(self) -> Path:
         return Path(self.LOG_DIR)
 
@@ -101,6 +106,7 @@ class Settings(BaseSettings):
             self.document_root,
             self.inbox_root,
             self.temp_dir,
+            self.recycle_bin_root,
             self.log_dir,
             Path(self.DATABASE_URL.replace("sqlite:///", "")).parent
             if self.DATABASE_URL.startswith("sqlite")
@@ -123,6 +129,7 @@ class Settings(BaseSettings):
         "inbox_root": "INBOX_ROOT",
         "temp_dir": "TEMP_DIR",
         "log_dir": "LOG_DIR",
+        "recycle_bin_root": "RECYCLE_BIN_ROOT",
     }
 
     def _resolve_field(self, key: str) -> str:

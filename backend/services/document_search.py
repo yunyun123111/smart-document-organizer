@@ -55,10 +55,14 @@ def keyword_pinyin(keyword: str) -> tuple[str, str]:
 def _pinyin_match_doc_ids(db, kw_full: str, kw_init: str) -> set[int]:
     """全表对 类型/标题/文件名 转拼音，返回命中文档 id。"""
     ids: set[int] = set()
-    rows = db.query(
-        Document.id, Document.document_type, Document.title,
-        Document.original_filename, Document.current_filename,
-    ).all()
+    rows = (
+        db.query(
+            Document.id, Document.document_type, Document.title,
+            Document.original_filename, Document.current_filename,
+        )
+        .filter(Document.status != "recycled")
+        .all()
+    )
     for row in rows:
         text = " ".join(
             filter(None, [row.document_type, row.title, row.original_filename, row.current_filename])
@@ -83,7 +87,7 @@ def _chars_diff(a: str, b: str) -> int | None:
 
 def fuzzy_match_types(db, keyword: str) -> set[str]:
     """错别字容错：对文档类型枚举做相似度匹配。"""
-    types = {t for (t,) in db.query(Document.document_type).distinct() if t}
+    types = {t for (t,) in db.query(Document.document_type).filter(Document.status != "recycled").distinct() if t}
     if not types:
         return set()
     kw_full, kw_init = keyword_pinyin(keyword)
@@ -187,7 +191,7 @@ def suggest(db, keyword: str, limit: int = 20) -> list[dict]:
 
     # 类型
     kw_full, kw_init = keyword_pinyin(kw)
-    types = sorted({t for (t,) in db.query(Document.document_type).distinct() if t})
+    types = sorted({t for (t,) in db.query(Document.document_type).filter(Document.status != "recycled").distinct() if t})
     for t in types:
         hit = kw in t or SequenceMatcher(None, kw, t).ratio() >= 0.7
         if not hit and kw_full:
@@ -222,7 +226,10 @@ def suggest(db, keyword: str, limit: int = 20) -> list[dict]:
     # 文件名
     filenames = (
         db.query(Document.original_filename)
-        .filter(Document.original_filename.like(like))
+        .filter(
+            Document.original_filename.like(like),
+            Document.status != "recycled",
+        )
         .order_by(Document.created_at.desc())
         .limit(10)
         .all()
