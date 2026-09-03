@@ -5,6 +5,7 @@ import io
 import shutil
 import zipfile
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
@@ -17,7 +18,9 @@ from backend.database import get_db
 from backend.models import (
     OP_DELETE,
     OP_RENAME,
+    OP_USER_EDIT,
     RESULT_OK,
+    SOURCE_USER,
     STATUS_NEED_REVIEW,
     STATUS_PROCESSING,
     Document,
@@ -309,22 +312,18 @@ class RenameRequest(BaseModel):
     filename: str
 
 
-@router.post("/{doc_id}/rename")
-def rename_document(doc_id: int, req: RenameRequest, db: Session = Depends(get_db)):
-    """手动重命名文档：移动磁盘文件 + 更新记录 + 审计日志。"""
-    doc = db.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="文档不存在")
+def _do_rename(db: Session, doc: Document, base: str) -> tuple[str, Path, bool]:
+    """重命名文档磁盘文件并更新记录。返回 (新文件名, 新路径, 是否变化)。"""
     src = Path(doc.current_path or doc.original_path)
     if not src.exists():
         raise HTTPException(status_code=400, detail="磁盘文件不存在，无法重命名")
     ext = src.suffix
-    base = (req.filename or "").strip().strip('"')
+    base = (base or "").strip().strip('"')
     if not base:
         raise HTTPException(status_code=400, detail="文件名不能为空")
     new_name = safe_filename(base, ext)
     if new_name == src.name:
-        return {"ok": True, "filename": src.name, "path": str(src), "changed": False}
+        return src.name, src, False
     target = unique_filename(src.parent, new_name)
     try:
         shutil.move(str(src), str(target))
@@ -342,9 +341,96 @@ def rename_document(doc_id: int, req: RenameRequest, db: Session = Depends(get_d
         result=RESULT_OK,
         error_message="手动重命名",
     )
+    return target.name, target, True
+
+
+@router.post("/{doc_id}/rename")
+def rename_document(doc_id: int, req: RenameRequest, db: Session = Depends(get_db)):
+    """手动重命名文档：移动磁盘文件 + 更新记录 + 审计日志。"""
+    doc = db.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    new_name, target, changed = _do_rename(db, doc, req.filename)
     db.commit()
-    logger.info("手动重命名: %s -> %s (doc#%s)", src.name, target.name, doc.id)
-    return {"ok": True, "filename": target.name, "path": str(target), "changed": True}
+    logger.info("手动重命名: %s -> %s (doc#%s)", target.name, new_name, doc.id)
+    return {"ok": True, "filename": target.name, "path": str(target), "changed": changed}
+
+
+class DocumentPatchRequest(BaseModel):
+    """已归档文档信息修正：文档类型 / 标题 / 识别字段 / 归档分类 / 文件名。"""
+    document_type: Optional[str] = None
+    title: Optional[str] = None
+    fields: Optional[dict[str, str]] = None  # 字段名 -> 值（含 suggested_category）
+    filename: Optional[str] = None           # 可选：同时重命名磁盘文件
+
+
+def _upsert_fields(db: Session, doc: Document, fields: dict[str, str]) -> None:
+    """把用户提交的字段写入文档档案（存在则更新，不存在则新增）。
+
+    - suggested_category 是唯一字段，必须按字段名查找，不能按值查找；
+    - 用户选定的分类也要落库，避免信息修正后分类丢失。
+    """
+    existing = {f.field_name: f for f in doc.fields}
+
+    def _set(name: str, value: str) -> None:
+        if name in existing:
+            existing[name].field_value = value
+        else:
+            db.add(
+                DocumentField(
+                    document_id=doc.id,
+                    field_name=name,
+                    field_value=value,
+                    confidence=1.0,
+                    source=SOURCE_USER,
+                )
+            )
+
+    for name, value in fields.items():
+        if name == "suggested_category":
+            continue
+        _set(name, str(value))
+    if "suggested_category" in fields:
+        _set("suggested_category", str(fields["suggested_category"]))
+
+
+@router.patch("/{doc_id}", response_model=DocumentDetail)
+def update_document(doc_id: int, req: DocumentPatchRequest, db: Session = Depends(get_db)):
+    """修正已归档文档的信息（文档类型 / 标题 / 识别字段 / 归档分类 / 文件名）。"""
+    doc = (
+        db.query(Document)
+        .options(joinedload(Document.fields))
+        .filter(Document.id == doc_id)
+        .first()
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    changed = False
+    if req.document_type is not None and req.document_type.strip() != doc.document_type:
+        doc.document_type = req.document_type.strip()
+        changed = True
+    if req.title is not None and req.title.strip() != doc.title:
+        doc.title = req.title.strip()
+        changed = True
+    if req.fields:
+        _upsert_fields(db, doc, req.fields)
+        changed = True
+    if req.filename is not None and req.filename.strip():
+        _, _, renamed = _do_rename(db, doc, req.filename)
+        changed = changed or renamed
+    if changed:
+        log_operation(
+            db,
+            OP_USER_EDIT,
+            old_path=doc.original_path or "",
+            new_path=doc.current_path or "",
+            document_id=doc.id,
+            result=RESULT_OK,
+            error_message="文档库信息修正（类型/字段/分类/文件名）",
+        )
+        db.commit()
+        db.refresh(doc)
+    return doc
 
 
 @router.delete("/{doc_id}")

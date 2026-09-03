@@ -15,6 +15,7 @@ import {
   openDocumentFile,
   renameDocument,
   suggestDocuments,
+  updateDocument,
   type DocumentDetail,
   type DocumentListItem,
   type SuggestItem,
@@ -207,9 +208,15 @@ async function openFile(id: number) {
   }
 }
 
-// ---- 文档预览（通用组件：PDF 用 pdf.js 沉浸式渲染，图片原图展示）----
-const previewDialog = ref(false)
+// ---- 文档预览分屏：左侧内嵌预览 + 右侧信息核对与修改 ----
+const previewDrawer = ref(false)
 const previewDoc = ref<{ id: number; name: string; ext: string } | null>(null)
+const editDetail = ref<DocumentDetail | null>(null)
+const editFilename = ref('')
+const editDocType = ref('')
+const editCategory = ref('')
+const editFields = ref<Record<string, string>>({})
+const editSaving = ref(false)
 
 const PREVIEW_BLOCK = ['doc', 'docx', 'xls', 'xlsx', 'zip', 'rar', '7z', 'exe']
 
@@ -224,7 +231,41 @@ async function preview(row: DocumentListItem) {
     name: row.current_filename || row.original_filename,
     ext,
   }
-  previewDialog.value = true
+  previewDrawer.value = true
+  await loadEdit(row.id)
+}
+
+async function loadEdit(id: number) {
+  const d = await getDocument(id)
+  editDetail.value = d
+  editDocType.value = d.document_type || ''
+  const f: Record<string, string> = {}
+  for (const fld of d.fields) {
+    if (fld.field_name === 'suggested_category') continue
+    f[fld.field_name] = fld.field_value
+  }
+  editFields.value = f
+  editCategory.value = d.fields.find((x) => x.field_name === 'suggested_category')?.field_value || ''
+  editFilename.value = (d.current_filename || '').replace(/\.[^.]+$/, '')
+}
+
+async function saveEdit() {
+  if (!previewDoc.value || !editDetail.value) return
+  editSaving.value = true
+  try {
+    await updateDocument(previewDoc.value.id, {
+      document_type: editDocType.value || undefined,
+      fields: { ...editFields.value, suggested_category: editCategory.value },
+      filename: editFilename.value.trim() || undefined,
+    })
+    ElMessage.success('已保存')
+    previewDrawer.value = false
+    await load()
+  } catch (e: any) {
+    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+  } finally {
+    editSaving.value = false
+  }
 }
 
 function fmtSize(n: number): string {
@@ -436,31 +477,67 @@ onMounted(async () => {
     </div>
   </el-drawer>
 
-  <!-- 文档预览弹窗 -->
-  <el-dialog
-    v-model="previewDialog"
+  <!-- 文档预览分屏：左侧内嵌预览 + 右侧信息核对与修改 -->
+  <el-drawer
+    v-model="previewDrawer"
     :title="previewDoc?.name || '文档预览'"
-    width="86%"
-    top="4vh"
-    append-to-body
-    class="preview-dialog"
+    size="min(1200px, 96vw)"
   >
-    <DocumentPreview
-      v-if="previewDoc"
-      :doc-id="previewDoc.id"
-      :name="previewDoc.name"
-      :file-type="previewDoc.ext"
-    />
-  </el-dialog>
+    <div v-if="editDetail" v-loading="editSaving" class="review-split">
+      <div class="review-left">
+        <DocumentPreview
+          v-if="previewDoc"
+          :doc-id="previewDoc.id"
+          :name="previewDoc.name"
+          :file-type="previewDoc.ext"
+        />
+      </div>
+      <div class="review-right">
+        <el-descriptions :column="1" border class="mb16">
+          <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
+          <el-descriptions-item label="大小">{{ fmtSize(editDetail.file_size) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="statusTag(editDetail.status)" size="small">
+              {{ statusLabel(editDetail.status) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="归档路径">{{ editDetail.current_path }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div class="field-title">文件名（不含扩展名）</div>
+        <el-input v-model="editFilename" class="mb16" placeholder="修改文件名" />
+
+        <div class="field-title">文档类型</div>
+        <el-input v-model="editDocType" placeholder="如：销售合同" class="mb16" />
+
+        <div class="field-title">归档分类</div>
+        <el-select v-model="editCategory" filterable allow-create clearable class="mb16 w100">
+          <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
+        </el-select>
+
+        <div class="field-title">识别字段（可修改）</div>
+        <div class="fields-grid">
+          <div v-for="k in Object.keys(editFields)" :key="k" class="field-row">
+            <span class="field-key">{{ k }}</span>
+            <el-input v-model="editFields[k]" size="small" />
+          </div>
+        </div>
+        <el-empty
+          v-if="Object.keys(editFields).length === 0"
+          description="暂无识别字段"
+          :image-size="50"
+        />
+
+        <div class="actions">
+          <el-button type="primary" @click="saveEdit">保存修改</el-button>
+          <el-button @click="previewDrawer = false">关闭</el-button>
+        </div>
+      </div>
+    </div>
+  </el-drawer>
 </template>
 
 <style scoped>
-/* 文档预览弹窗：给 DocumentPreview 100% 高度提供容器高度 */
-.preview-dialog :deep(.el-dialog__body) {
-  height: calc(92vh - 70px);
-  padding: 0;
-  overflow: hidden;
-}
 .head {
   display: flex;
   justify-content: space-between;
@@ -472,6 +549,68 @@ onMounted(async () => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+/* 分屏：左预览 + 右信息核对修改 */
+.review-split {
+  display: flex;
+  gap: 16px;
+  height: calc(100vh - 120px);
+}
+.review-left {
+  flex: 1 1 55%;
+  min-width: 0;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f5f6f8;
+}
+.review-right {
+  flex: 1 1 45%;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.mb16 { margin-bottom: 16px; }
+.w100 { width: 100%; }
+.field-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #606266;
+  margin: 12px 0 6px;
+}
+.fields-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-key {
+  min-width: 90px;
+  font-size: 12px;
+  color: #909399;
+  flex-shrink: 0;
+}
+.actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+}
+@media (max-width: 768px) {
+  .review-split {
+    flex-direction: column;
+    height: auto;
+  }
+  .review-left {
+    flex: none;
+    height: 45vh;
+  }
+  .review-right {
+    flex: none;
+  }
 }
 /* 手机端卡片列表 */
 .mobile-list {

@@ -221,6 +221,18 @@ export function renameDocument(
   return http.post(`/documents/${id}/rename`, { filename })
 }
 
+export interface DocumentUpdatePayload {
+  document_type?: string
+  title?: string
+  fields?: Record<string, string>
+  filename?: string
+}
+
+// 已归档文档信息修正：文档类型 / 标题 / 识别字段 / 归档分类 / 文件名
+export function updateDocument(id: number, payload: DocumentUpdatePayload): Promise<DocumentDetail> {
+  return http.patch(`/documents/${id}`, payload)
+}
+
 export function batchDeleteDocuments(
   doc_ids: number[],
 ): Promise<{ ok: boolean; deleted_count: number; missing_count: number }> {
