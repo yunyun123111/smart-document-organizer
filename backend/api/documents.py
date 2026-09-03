@@ -481,16 +481,12 @@ async def upload_document(
     """上传文件到 inbox 并登记文档（待整理）。"""
     inbox = settings.inbox_root
     Path(inbox).mkdir(parents=True, exist_ok=True)
-    safe_name = file.filename.replace("\\", "_").replace("/", "_")
-    target = Path(inbox) / safe_name
+    # 统一安全命名：safe_filename 清洗（含路径分隔符/非法字符/保留字/长度），
+    # unique_filename 对重名递增 _001/_002…，绝不覆盖已有文件
+    fname = file.filename or "上传文件"
+    safe_name = safe_filename(Path(fname).stem or "上传文件", Path(fname).suffix)
     content = await file.read()
-    # 重名时递增
-    if target.exists():
-        base = target.stem
-        i = 1
-        while target.exists():
-            target = Path(inbox) / f"{base}_{i}{target.suffix}"
-            i += 1
+    target = unique_filename(inbox, safe_name)
     target.write_bytes(content)
 
     file_type = get_file_type(target)

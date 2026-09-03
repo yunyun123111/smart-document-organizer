@@ -23,6 +23,7 @@ from backend.models import (
 )
 from backend.services import operation_service
 from backend.services.file_service import FileOperationError, ensure_directory, move_file
+from backend.utils.filename_utils import unique_filename
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.undo_service")
@@ -55,14 +56,16 @@ class UndoService:
 
         if not new_path.exists():
             return UndoResult(success=False, error=f"文件不存在，无法撤销: {new_path}")
-        if old_path.exists():
-            return UndoResult(
-                success=False, error=f"原位置已存在文件，撤销被阻止: {old_path}"
-            )
 
         try:
             ensure_directory(old_path.parent)
-            restored = move_file(new_path, old_path)
+            # 原位置已被占用：递增命名恢复（_001/_002…），绝不覆盖已有文件
+            restore_target = (
+                unique_filename(old_path.parent, old_path.name)
+                if old_path.exists()
+                else old_path
+            )
+            restored = move_file(new_path, restore_target)
         except FileOperationError as e:
             operation_service.log_operation(
                 db,
@@ -86,17 +89,18 @@ class UndoService:
             job_id=log.job_id,
             result=RESULT_OK,
         )
-        self._restore_document_state(db, log, old_path)
+        self._restore_document_state(db, log, restored)
         logger.info("撤销成功: %s -> %s", new_path, restored)
         return UndoResult(success=True, restored_path=restored)
 
     @staticmethod
-    def _restore_document_state(db: Session, log: OperationLog, old_path: Path) -> None:
+    def _restore_document_state(db: Session, log: OperationLog, restored: Path) -> None:
         """撤销后把文档档案改回归档前状态。
 
         否则 doc.status 仍是 archived、current_path 指向已不存在的归档路径：
         - 去重服务只认 status=archived，会让回到待整理目录的文件被误判为重复；
         - 文档库显示已归档但预览/下载 404。
+        注意：恢复路径可能因原位置被占用而递增（_001），必须回写实际恢复路径。
         """
         if log.document_id is None:
             return
@@ -104,11 +108,11 @@ class UndoService:
         if doc is None:
             return
         doc.status = STATUS_PENDING
-        doc.current_path = str(old_path)
-        doc.current_filename = old_path.name
+        doc.current_path = str(restored)
+        doc.current_filename = restored.name
         doc.processed_at = None
         db.commit()
-        logger.info("撤销已回写文档状态: doc#%s -> pending (%s)", doc.id, old_path)
+        logger.info("撤销已回写文档状态: doc#%s -> pending (%s)", doc.id, restored)
 
 
 undo_service = UndoService()

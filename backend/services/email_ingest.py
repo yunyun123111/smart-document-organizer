@@ -27,7 +27,7 @@ from backend.config import settings
 from backend.database import SessionLocal
 from backend.models import Document, STATUS_PENDING
 from backend.utils.file_utils import get_file_type, get_mime_type
-from backend.utils.filename_utils import unique_filename
+from backend.utils.filename_utils import safe_filename, unique_filename
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.email_ingest")
@@ -150,10 +150,8 @@ def _save_attachments(msg) -> list[Path]:
         payload = part.get_payload(decode=True)
         if not payload:
             continue
-        base = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "_", Path(filename).stem).strip(" .")
-        if not base:
-            base = "邮件附件"
-        target = unique_filename(inbox, f"{base}{ext}")
+        # 统一安全命名：safe_filename 处理非法字符/保留字/长度，unique_filename 防重名
+        target = unique_filename(inbox, safe_filename(Path(filename).stem or "邮件附件", ext))
         try:
             target.write_bytes(payload)
             saved.append(target)
