@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
+import { useSplitDrag } from '@/composables/useSplitDrag'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   batchDeleteDocuments,
@@ -13,7 +14,6 @@ import {
   listDocuments,
   listDocumentTypes,
   openDocumentFile,
-  renameDocument,
   suggestDocuments,
   updateDocument,
   type DocumentDetail,
@@ -144,25 +144,6 @@ async function open(id: number) {
   detail.value = await getDocument(id)
 }
 
-async function rename(row: DocumentListItem) {
-  const base = row.current_filename.replace(/\.[^.]+$/, '')
-  try {
-    const { value } = await ElMessageBox.prompt('输入新的文件名（不含扩展名）', '重命名', {
-      inputValue: base,
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-    })
-    if (!value || value.trim() === '') return
-    const res = await renameDocument(row.id, value.trim())
-    ElMessage.success(res.changed ? `已重命名为：${res.filename}` : '文件名未变化')
-    await load()
-  } catch (e: any) {
-    if (e !== 'cancel' && !(e && e === 'cancel')) {
-      if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
-    }
-  }
-}
-
 async function remove(row: DocumentListItem) {
   try {
     await ElMessageBox.confirm(`确认删除「${row.original_filename}」？`, '删除', { type: 'warning' })
@@ -217,6 +198,8 @@ const editDocType = ref('')
 const editCategory = ref('')
 const editFields = ref<Record<string, string>>({})
 const editSaving = ref(false)
+// 分屏可拖拽调整左右宽度
+const { leftRatio, startDrag } = useSplitDrag()
 
 const PREVIEW_BLOCK = ['doc', 'docx', 'xls', 'xlsx', 'zip', 'rar', '7z', 'exe']
 
@@ -400,7 +383,6 @@ onMounted(async () => {
         </div>
         <div class="doc-time gray small">{{ row.created_at }}</div>
         <div class="doc-actions">
-          <el-button size="small" @click="rename(row)">重命名</el-button>
           <el-button size="small" @click="open(row.id)">详情</el-button>
           <el-button size="small" type="primary" @click="preview(row)">预览</el-button>
           <el-button v-if="row.status === 'archived'" size="small" type="success" @click="openFile(row.id)">打开</el-button>
@@ -440,9 +422,8 @@ onMounted(async () => {
         <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
       </el-table-column>
       <el-table-column prop="created_at" label="时间" width="160" />
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="rename(row)">重命名</el-button>
           <el-button link type="primary" @click="open(row.id)">详情</el-button>
           <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button v-if="row.status === 'archived'" link type="success" @click="openFile(row.id)">
@@ -484,7 +465,7 @@ onMounted(async () => {
     size="min(1200px, 96vw)"
   >
     <div v-if="editDetail" v-loading="editSaving" class="review-split">
-      <div class="review-left">
+      <div class="review-left" :style="{ flexBasis: leftRatio + '%' }">
         <DocumentPreview
           v-if="previewDoc"
           :doc-id="previewDoc.id"
@@ -492,6 +473,7 @@ onMounted(async () => {
           :file-type="previewDoc.ext"
         />
       </div>
+      <div class="splitter" @mousedown="startDrag" />
       <div class="review-right">
         <el-descriptions :column="1" border class="mb16">
           <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
@@ -557,15 +539,25 @@ onMounted(async () => {
   height: calc(100vh - 120px);
 }
 .review-left {
-  flex: 1 1 55%;
+  flex: 0 0 auto;
   min-width: 0;
   border: 1px solid #ebeef5;
   border-radius: 8px;
   overflow: hidden;
   background: #f5f6f8;
 }
+.splitter {
+  flex: 0 0 8px;
+  cursor: col-resize;
+  border-radius: 4px;
+  transition: background 0.2s;
+  touch-action: none;
+}
+.splitter:hover {
+  background: #409eff40;
+}
 .review-right {
-  flex: 1 1 45%;
+  flex: 1 1 auto;
   min-width: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -610,6 +602,9 @@ onMounted(async () => {
   }
   .review-right {
     flex: none;
+  }
+  .splitter {
+    display: none;
   }
 }
 /* 手机端卡片列表 */

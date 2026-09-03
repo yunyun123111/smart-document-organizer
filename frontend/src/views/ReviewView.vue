@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useSplitDrag } from '@/composables/useSplitDrag'
 import {
   approveReview,
   batchApprove,
@@ -26,6 +27,8 @@ const editableFields = ref<Record<string, string>>({})
 const docType = ref('')
 const category = ref('')
 const customFilename = ref('')
+// 分屏可拖拽调整左右宽度
+const { leftRatio, startDrag } = useSplitDrag()
 
 const totalCount = computed(() => groups.value.reduce((n, g) => n + g.documents.length, 0))
 
@@ -246,13 +249,14 @@ onMounted(load)
     <!-- 单份审核抽屉：左预览 + 右核对修改 分屏 -->
     <el-drawer v-model="drawer" title="人工审核" size="min(1200px, 96vw)">
       <div v-if="detail" v-loading="saving" class="review-split">
-        <div class="review-left">
+        <div class="review-left" :style="{ flexBasis: leftRatio + '%' }">
           <DocumentPreview
             :doc-id="detail.document.id"
             :name="detail.document.current_filename || detail.document.original_filename"
             :file-type="detail.document.file_type"
           />
         </div>
+        <div class="splitter" @mousedown="startDrag" />
         <div class="review-right">
           <el-descriptions :column="1" border class="mb16">
           <el-descriptions-item label="原文件名">{{ detail.document.original_filename }}</el-descriptions-item>
@@ -370,15 +374,25 @@ onMounted(load)
   height: calc(100vh - 120px);
 }
 .review-left {
-  flex: 1 1 55%;
+  flex: 0 0 auto;
   min-width: 0;
   border: 1px solid #ebeef5;
   border-radius: 8px;
   overflow: hidden;
   background: #f5f6f8;
 }
+.splitter {
+  flex: 0 0 8px;
+  cursor: col-resize;
+  border-radius: 4px;
+  transition: background 0.2s;
+  touch-action: none;
+}
+.splitter:hover {
+  background: #409eff40;
+}
 .review-right {
-  flex: 1 1 45%;
+  flex: 1 1 auto;
   min-width: 0;
   overflow-y: auto;
   padding-right: 4px;
@@ -394,6 +408,9 @@ onMounted(load)
   }
   .review-right {
     flex: none;
+  }
+  .splitter {
+    display: none;
   }
 }
 </style>
