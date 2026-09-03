@@ -18,6 +18,7 @@ from backend.models import (
     Category,
     Document,
     DocumentField,
+    DocumentSample,
     RecognitionTemplate,
 )
 from backend.schemas.document import (
@@ -102,6 +103,31 @@ def _learn_template(db: Session, doc: Document, category_path: str) -> None:
         )
     db.commit()
     logger.info("已学习识别模板: %s -> %s (require=%s)", doc_type, category_path, require)
+
+    # 人工反馈增强：把本次确认文档的字段并入同类格式样本锚点（越用越准）
+    try:
+        samples = (
+            db.query(DocumentSample)
+            .filter(
+                DocumentSample.document_type == doc_type,
+                DocumentSample.category_path == category_path,
+                DocumentSample.enabled.is_(True),
+            )
+            .all()
+        )
+        if samples:
+            new_fields = sorted({f.field_name for f in doc.fields})
+            for s in samples:
+                fp = s.fingerprint_dict
+                old = set(fp.get("fields") or [])
+                merged = sorted(old | set(new_fields))
+                if merged != sorted(old):
+                    fp["fields"] = merged
+                    s.fingerprint = json.dumps(fp, ensure_ascii=False)
+            db.commit()
+            logger.info("格式样本锚点已增强: %s -> %s (%d 个样本)", doc_type, category_path, len(samples))
+    except Exception:  # noqa: BLE001
+        logger.exception("格式样本锚点增强失败（不影响归档）")
 
 
 def _upsert_fields(db: Session, doc: Document, fields: dict[str, str]) -> None:

@@ -47,6 +47,7 @@ from backend.models.processing_job import (
 )
 from backend.models.rename_template import RenameTemplate
 from backend.models.recognition_template import RecognitionTemplate
+from backend.models.document_sample import DocumentSample
 from backend.models.rule import ALL_MATCH_TYPES, MATCH_CONTAINS, MATCH_EXACT, MATCH_REGEX, Rule
 
 __all__ = [
@@ -59,6 +60,7 @@ __all__ = [
     "FilenameRule",
     "RenameTemplate",
     "RecognitionTemplate",
+    "DocumentSample",
     "ProcessingJob",
     "OperationLog",
     # 状态 / 来源 / 操作类型 / 匹配类型

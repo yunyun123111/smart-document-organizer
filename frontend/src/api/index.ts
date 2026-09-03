@@ -427,9 +427,46 @@ export function deleteTemplate(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/rules/templates/${id}`)
 }
 
-// ---------- 操作日志 ----------
-export interface LogItem {
+// ---------- 格式样本（自动学习） ----------
+export interface DocumentSampleItem {
   id: number
+  document_type: string
+  category_path: string
+  original_filename: string
+  usage_count: number
+  enabled: boolean
+  note: string | null
+  created_at?: string | null
+  summary?: {
+    labels: number
+    grams: number
+    fields: string[]
+    stats: Record<string, unknown>
+  }
+}
+
+export function listSamples(): Promise<DocumentSampleItem[]> {
+  return http.get('/samples')
+}
+
+export function createSample(formData: FormData): Promise<DocumentSampleItem> {
+  // 大 PDF OCR 学习耗时较长，单独给 180s 超时，避免 30s 默认超时中断
+  return http.post('/samples', formData, { timeout: 180000 })
+}
+
+export function updateSample(
+  id: number,
+  data: { document_type?: string; category_path?: string; enabled?: boolean; note?: string },
+): Promise<DocumentSampleItem> {
+  return http.patch(`/samples/${id}`, data)
+}
+
+export function deleteSample(id: number): Promise<{ ok: boolean }> {
+  return http.delete(`/samples/${id}`)
+}
+
+// ---------- 操作日志 ----------
+export interface LogItem {  id: number
   document_id: number | null
   job_id: number | null
   operation_type: string

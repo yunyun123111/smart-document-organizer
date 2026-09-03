@@ -34,6 +34,7 @@ from backend.services.rule_engine import (
     RuleMatch,
     rule_confidence,
 )
+from backend.services.sample_service import sample_service
 from backend.services.text_service import clean_parsed_document
 from backend.utils.logger import get_logger
 
@@ -142,6 +143,35 @@ class ClassifierService:
                 if fields_dict
                 else 0.0
             )
+
+            # 4.6 格式样本匹配（人工样例学习，纯本地零 token）：
+            # 用户上传的清晰样本指纹与文档版式一致 -> 直接自动归档，跳过 AI
+            sample, sample_score = sample_service.match_all(
+                self.db, text, list(fields_dict.keys())
+            )
+            if sample is not None:
+                result.document_type = sample.document_type
+                result.suggested_category = sample.category_path
+                result.confidence = ConfidenceResult(
+                    score=round(sample_score, 3),
+                    decision=DECISION_AUTO,
+                    components={"sample": sample_score},
+                )
+                result.decision = DECISION_AUTO
+                render_fields = dict(result.field_values)
+                if result.document_type and "document_type" not in render_fields:
+                    render_fields["document_type"] = result.document_type
+                template = self._category_template(sample.category_path)
+                result.suggested_filename = rename_service.render(
+                    template, render_fields, Path(result.file_path).suffix
+                )
+                sample.usage_count += 1
+                self.db.commit()
+                logger.info(
+                    "格式样本命中 #%s %s -> %s (score=%.3f)",
+                    sample.id, path.name, sample.category_path, sample_score,
+                )
+                return result
 
             # 4.5 识别模板匹配（同类文件"记性"）：命中且关键字段齐全 -> 直接自动归档，跳过 AI
             tpl = self._match_template(best.category_name if best else None, fields_dict)

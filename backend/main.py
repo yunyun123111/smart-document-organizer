@@ -25,6 +25,7 @@ from backend.api.logs import router as logs_router
 from backend.api.processing import router as processing_router
 from backend.api.review import router as review_router
 from backend.api.rules import router as rules_router
+from backend.api.samples import router as samples_router
 from backend.api.settings import router as settings_router
 from backend.api.system import router as system_router
 from backend.config import settings
@@ -66,6 +67,7 @@ app.include_router(filename_rules_router)
 app.include_router(processing_router)
 app.include_router(review_router)
 app.include_router(rules_router)
+app.include_router(samples_router)
 app.include_router(settings_router)
 app.include_router(backup_router)
 app.include_router(logs_router)
