@@ -269,7 +269,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 迁移列表：[(version, name, upgrade_fn)]
 # upgrade_fn(db: Session) -> None，须幂等。
@@ -286,8 +286,22 @@ def _migrate_create_recycle_bin(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_excel_sources(db: Session) -> None:
+    """V1.0-登记表: 新增 excel_sources / excel_sheet_configs 表（Excel 权威数据源匹配）。幂等。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS excel_sources (id INTEGER PRIMARY KEY AUTOINCREMENT, name VARCHAR(255) NOT NULL DEFAULT '', file_path VARCHAR(1024) NOT NULL DEFAULT '', file_hash VARCHAR(64) NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT 1, total_sheets INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_excel_sources_file_hash ON excel_sources (file_hash)"))
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS excel_sheet_configs (id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, sheet_name VARCHAR(255) NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT 1, doc_type_hint VARCHAR(100) NOT NULL DEFAULT '', column_map TEXT NOT NULL DEFAULT '{}', key_column VARCHAR(255) NOT NULL DEFAULT '', row_count INTEGER NOT NULL DEFAULT 0, last_error VARCHAR(500) NOT NULL DEFAULT '', created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_excel_sheet_configs_source_id ON excel_sheet_configs (source_id)"))
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
+    (3, "create excel_sources", _migrate_create_excel_sources),
 ]
 
 

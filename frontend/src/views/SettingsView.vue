@@ -14,6 +14,13 @@ import {
   listFilenameRules,
   updateFilenameRule,
   updateSettings,
+  listExcelSources,
+  uploadExcelSource,
+  updateExcelSource,
+  updateExcelSheet,
+  deleteExcelSource,
+  testExcelMatch,
+  type ExcelSource,
   type CategoryNode,
   type FilenameRule,
   type Settings,
@@ -303,7 +310,62 @@ async function removeFnRule(r: FilenameRule) {
   await loadFnRules()
 }
 
-onMounted(load)
+// ---- Excel 登记表（权威数据源） ----
+const excelSources = ref<ExcelSource[]>([])
+const excelLoading = ref(false)
+const excelTestInput = ref('')
+const excelTestResult = ref<any>(null)
+const excelTestSource = ref<number | null>(null)
+
+async function loadExcelSources() {
+  excelLoading.value = true
+  try {
+    const r = await listExcelSources()
+    excelSources.value = r.items || []
+  } catch {
+    excelSources.value = []
+  } finally {
+    excelLoading.value = false
+  }
+}
+
+async function onUploadExcel(file: File) {
+  await uploadExcelSource(file)
+  ElMessage.success('Excel 登记表已上传并解析')
+  await loadExcelSources()
+}
+
+function beforeExcelUpload(file: File) {
+  const ok = /\.(xlsx|xls|xlsm)$/i.test(file.name)
+  if (!ok) ElMessage.error('仅支持 .xlsx / .xls / .xlsm 文件')
+  return ok
+}
+
+async function toggleExcelSource(src: ExcelSource, v: boolean) {
+  await updateExcelSource(src.id, { enabled: v })
+  await loadExcelSources()
+}
+
+async function toggleExcelSheet(src: ExcelSource, sheetId: number, v: boolean) {
+  await updateExcelSheet(src.id, sheetId, { enabled: v })
+  await loadExcelSources()
+}
+
+async function removeExcelSource(src: ExcelSource) {
+  await ElMessageBox.confirm(`删除数据源「${src.name}」？已归档文档不受影响。`, '删除确认', { type: 'warning' })
+  await deleteExcelSource(src.id)
+  ElMessage.success('已删除')
+  await loadExcelSources()
+}
+
+async function runExcelTest(src: ExcelSource) {
+  excelTestSource.value = src.id
+  excelTestResult.value = null
+  const r = await testExcelMatch(src.id, { contract_no: excelTestInput.value })
+  excelTestResult.value = r.match
+}
+
+onMounted(() => { load(); loadExcelSources() })
 </script>
 
 <template>
@@ -417,6 +479,47 @@ onMounted(load)
         <el-button type="primary" plain size="small" class="mt8" :loading="emailChecking" @click="doCheckEmail">
           立即检查邮箱
         </el-button>
+      </div>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
+      <template #header><span>Excel 登记表（权威数据源：命中后用台账字段命名归档）</span></template>
+      <div class="gray small mb8">
+        上传你的业务登记台账（合同 / 结算 / 收付款等）。系统 OCR 识别出合同号后自动在台账中匹配，
+        命中则用台账中的船名、物料、金额等字段覆盖识别结果，命名更准（纯本地，不消耗 AI）。
+        多 sheet 的台账会自动解析，可单独启用 / 停用每个 sheet。
+      </div>
+      <el-upload :show-file-list="false" :before-upload="beforeExcelUpload" :http-request="(opt: any) => onUploadExcel(opt.file)">
+        <el-button type="primary" :loading="excelLoading">上传 Excel 登记表</el-button>
+      </el-upload>
+
+      <div v-if="!excelSources.length" class="gray small mt8">尚未上传登记表</div>
+
+      <div v-for="src in excelSources" :key="src.id" class="excel-source mb8">
+        <div class="excel-source-head">
+          <el-tag type="info" size="small">{{ src.name }}</el-tag>
+          <span class="gray small" style="margin:0 4px">启用</span>
+          <el-switch :model-value="src.enabled" size="small" @change="(v: boolean) => toggleExcelSource(src, v)" />
+          <el-button type="danger" link size="small" @click="removeExcelSource(src)">删除</el-button>
+        </div>
+        <div v-for="sh in src.sheets" :key="sh.id" class="excel-sheet">
+          <span class="sheet-name">{{ sh.sheet_name }}</span>
+          <el-switch :model-value="sh.enabled" size="small" @change="(v: boolean) => toggleExcelSheet(src, sh.id, v)" />
+          <span v-if="sh.key_column" class="gray small" style="margin-left:8px">主键列：{{ sh.key_column }}</span>
+          <div class="gray small" style="font-size:12px;margin-top:2px">
+            映射：<span v-for="(col, std) in sh.column_map" :key="std" class="map-chip">{{ std }}→{{ col }}</span>
+          </div>
+        </div>
+        <div class="excel-test" style="margin-top:6px">
+          <el-input v-model="excelTestInput" placeholder="输入合同号测试匹配（如 SJWLXS(DD)-2026-YC0453）" size="small" style="width:340px;display:inline-block" />
+          <el-button size="small" @click="runExcelTest(src)">测试匹配</el-button>
+        </div>
+        <div v-if="excelTestSource === src.id && excelTestResult" class="rel-result">
+          <el-tag :type="excelTestResult.matched ? 'success' : 'info'" size="small">
+            {{ excelTestResult.matched ? '命中：' + excelTestResult.sheet_name + '（' + excelTestResult.key + '）' : '未命中' }}
+          </el-tag>
+          <div v-if="excelTestResult.matched" class="gray small" style="font-size:12px;word-break:break-all">{{ JSON.stringify(excelTestResult.fields) }}</div>
+        </div>
       </div>
     </el-card>
 
@@ -628,4 +731,9 @@ code { background: #f0f2f5; padding: 0 4px; border-radius: 3px; }
 .email-error { flex-basis: 100%; margin-top: 4px; }
 .mr4 { margin-right: 4px; }
 .rel-result { margin-top: 8px; }
+.excel-source { border: 1px solid #ebeef5; border-radius: 6px; padding: 10px; }
+.excel-source-head { display: flex; align-items: center; gap: 8px; }
+.excel-sheet { margin-top: 8px; padding: 6px 10px; background: #fafafa; border-radius: 4px; }
+.sheet-name { font-weight: 600; margin-right: 8px; }
+.map-chip { background: #e6f0ff; color: #3c6ef0; border-radius: 3px; padding: 0 5px; margin-right: 4px; }
 </style>

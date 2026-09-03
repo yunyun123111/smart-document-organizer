@@ -94,30 +94,30 @@ class TestFutureMigration:
             db.commit()
             database.run_migrations(db)  # 打 legacy baseline + 应用当前已有迁移
 
-        # 模拟发布新版本：SCHEMA_VERSION=3，新增 v3 迁移
-        monkeypatch.setattr(database, "SCHEMA_VERSION", 3)
+        # 模拟发布新版本：SCHEMA_VERSION=4，新增 v4 迁移
+        monkeypatch.setattr(database, "SCHEMA_VERSION", 4)
         monkeypatch.setattr(
             database, "MIGRATIONS",
-            [(3, "add demo col", self._add_col_fn("demo_col"))],
+            [(4, "add demo col", self._add_col_fn("demo_col"))],
         )
         with Session() as db:
             database.run_migrations(db)
-            assert (3, "add demo col") in _migration_names(db)
+            assert (4, "add demo col") in _migration_names(db)
             cols = {r[1] for r in db.execute(text("PRAGMA table_info(documents)")).fetchall()}
             assert "demo_col" in cols
 
         # 再次运行 → 幂等，不重复插入迁移记录
         with Session() as db:
             database.run_migrations(db)
-            assert _migration_names(db).count((3, "add demo col")) == 1
+            assert _migration_names(db).count((4, "add demo col")) == 1
         eng.dispose()
 
     def test_new_migration_skipped_on_fresh(self, tmp_path, monkeypatch):
         """新库：create_all 已是最新结构，迁移直接标记已应用、不执行。"""
-        monkeypatch.setattr(database, "SCHEMA_VERSION", 3)
+        monkeypatch.setattr(database, "SCHEMA_VERSION", 4)
         monkeypatch.setattr(
             database, "MIGRATIONS",
-            [(3, "add demo col", self._add_col_fn("demo_col"))],
+            [(4, "add demo col", self._add_col_fn("demo_col"))],
         )
         eng, Session = _make_session(tmp_path)
         with Session() as db:

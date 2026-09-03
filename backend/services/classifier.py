@@ -58,6 +58,7 @@ class AnalysisResult:
     suggested_category: str = ""                        # 分类 path
     suggested_filename: str = ""
     needs_ocr: bool = False
+    excel_match: dict | None = None
     error: str = ""
 
     def to_dict(self) -> dict:
@@ -74,6 +75,7 @@ class AnalysisResult:
             "suggested_category": self.suggested_category,
             "suggested_filename": self.suggested_filename,
             "needs_ocr": self.needs_ocr,
+            "excel_match": self.excel_match,
             "error": self.error,
         }
 
@@ -143,6 +145,22 @@ class ClassifierService:
                 if fields_dict
                 else 0.0
             )
+
+            # 4.3 Excel 登记表权威数据源匹配（纯本地零 token）：
+            # OCR 提取合同号（或日期+船名 / 物料+数量）命中 Excel 台账行，
+            # 命中则用 Excel 行字段覆盖 OCR 结果，命名 / 归档更准。
+            from backend.services.excel_matcher import excel_matcher
+
+            em = excel_matcher.match(self.db, result.field_values)
+            if em.matched:
+                for k, v in em.fields.items():
+                    result.field_values[k] = v
+                    result.fields[k] = (v, 1.0, "EXCEL")
+                result.excel_match = em.to_dict()
+                logger.info(
+                    "Excel 登记表命中 %s/%s（%s），已用台账字段覆盖 OCR",
+                    em.source_name, em.sheet_name, em.key,
+                )
 
             # 4.6 格式样本匹配（人工样例学习，纯本地零 token）：
             # 用户上传的清晰样本指纹与文档版式一致 -> 直接自动归档，跳过 AI

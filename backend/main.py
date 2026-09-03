@@ -20,6 +20,7 @@ from backend.api.backup import router as backup_router
 from backend.api.categories import router as categories_router
 from backend.api.email import router as email_router
 from backend.api.documents import router as documents_router
+from backend.api.excel_sources import router as excel_sources_router
 from backend.api.filename_rules import router as filename_rules_router
 from backend.api.logs import router as logs_router
 from backend.api.processing import router as processing_router
@@ -68,6 +69,7 @@ app.include_router(filename_rules_router)
 app.include_router(processing_router)
 app.include_router(review_router)
 app.include_router(recycle_bin_router)
+app.include_router(excel_sources_router)
 app.include_router(rules_router)
 app.include_router(samples_router)
 app.include_router(settings_router)

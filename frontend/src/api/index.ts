@@ -717,3 +717,54 @@ export function batchPermanentDeleteRecycle(ids: number[]): Promise<{
 export function emptyRecycleBin(): Promise<{ ok: boolean; ok_count: number; failed: number; errors: string[] }> {
   return http.post('/recycle-bin/empty')
 }
+
+// ---------- Excel 登记表（权威数据源） ----------
+export interface ExcelSheetConfig {
+  id: number
+  source_id: number
+  sheet_name: string
+  enabled: boolean
+  doc_type_hint: string
+  column_map: Record<string, string>
+  key_column: string
+  row_count: number
+  last_error: string
+}
+
+export interface ExcelSource {
+  id: number
+  name: string
+  file_path: string
+  enabled: boolean
+  total_sheets: number
+  sheets: ExcelSheetConfig[]
+}
+
+export function listExcelSources(): Promise<{ items: ExcelSource[] }> {
+  return http.get('/excel-sources')
+}
+
+export function uploadExcelSource(file: File): Promise<{ source: ExcelSource }> {
+  const fd = new FormData()
+  fd.append('file', file)
+  return http.post('/excel-sources/upload', fd)
+}
+
+export function updateExcelSource(id: number, body: { name?: string; enabled?: boolean }): Promise<{ source: ExcelSource }> {
+  return http.put(`/excel-sources/${id}`, body)
+}
+
+export function updateExcelSheet(
+  sourceId: number, sheetId: number,
+  body: { enabled?: boolean; doc_type_hint?: string; key_column?: string; column_map?: Record<string, string> },
+): Promise<{ sheet: ExcelSheetConfig }> {
+  return http.put(`/excel-sources/${sourceId}/sheets/${sheetId}`, body)
+}
+
+export function deleteExcelSource(id: number): Promise<{ ok: boolean }> {
+  return http.delete(`/excel-sources/${id}`)
+}
+
+export function testExcelMatch(id: number, fields: Record<string, string>): Promise<{ match: any }> {
+  return http.post(`/excel-sources/${id}/test-match`, { fields })
+}

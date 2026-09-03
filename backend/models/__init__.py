@@ -21,6 +21,7 @@ from backend.models.document_field import (
     SOURCE_OCR,
     SOURCE_RULE,
     SOURCE_USER,
+    SOURCE_EXCEL,
     DocumentField,
 )
 from backend.models.operation_log import (
@@ -53,6 +54,7 @@ from backend.models.rename_template import RenameTemplate
 from backend.models.recognition_template import RecognitionTemplate
 from backend.models.document_sample import DocumentSample
 from backend.models.recycle_bin import RecycleBinItem
+from backend.models.excel_source import ExcelSource, ExcelSheetConfig
 from backend.models.rule import ALL_MATCH_TYPES, MATCH_CONTAINS, MATCH_EXACT, MATCH_REGEX, Rule
 
 __all__ = [
@@ -67,6 +69,8 @@ __all__ = [
     "RecognitionTemplate",
     "DocumentSample",
     "RecycleBinItem",
+    "ExcelSource",
+    "ExcelSheetConfig",
     "ProcessingJob",
     "OperationLog",
     # 状态 / 来源 / 操作类型 / 匹配类型
@@ -85,6 +89,7 @@ __all__ = [
     "SOURCE_OCR",
     "SOURCE_AI",
     "SOURCE_USER",
+    "SOURCE_EXCEL",
     "ALL_OPERATION_TYPES",
     "OP_IMPORT",
     "OP_PARSE",
