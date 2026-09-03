@@ -172,28 +172,42 @@ class ClassifierService:
                 self.db, text, list(fields_dict.keys())
             )
             if sample is not None:
-                result.document_type = sample.document_type
-                result.suggested_category = sample.category_path
-                result.confidence = ConfidenceResult(
-                    score=round(sample_score, 3),
-                    decision=DECISION_AUTO,
-                    components={"sample": sample_score},
+                # 规则优先：规则引擎已强命中（>=2 个关键词）且与样本类型冲突时，
+                # 信任规则。销售/采购合同版式高度相似，样本指纹易误判相似版式。
+                rule_strong = (
+                    best is not None
+                    and bool(getattr(best, "matched_keywords", None))
+                    and len(best.matched_keywords) >= 2
                 )
-                result.decision = DECISION_AUTO
-                render_fields = dict(result.field_values)
-                if result.document_type and "document_type" not in render_fields:
-                    render_fields["document_type"] = result.document_type
-                template = self._category_template(sample.category_path)
-                result.suggested_filename = rename_service.render(
-                    template, render_fields, Path(result.file_path).suffix
-                )
-                sample.usage_count += 1
-                self.db.commit()
-                logger.info(
-                    "格式样本命中 #%s %s -> %s (score=%.3f)",
-                    sample.id, path.name, sample.category_path, sample_score,
-                )
-                return result
+                if rule_strong and best.category_name != sample.document_type:
+                    logger.info(
+                        "格式样本 #%s 判定 %s 与规则 %s 冲突，信任规则（命中 %d 个关键词: %s）",
+                        sample.id, sample.document_type, best.category_name,
+                        len(best.matched_keywords), best.matched_keywords,
+                    )
+                else:
+                    result.document_type = sample.document_type
+                    result.suggested_category = sample.category_path
+                    result.confidence = ConfidenceResult(
+                        score=round(sample_score, 3),
+                        decision=DECISION_AUTO,
+                        components={"sample": sample_score},
+                    )
+                    result.decision = DECISION_AUTO
+                    render_fields = dict(result.field_values)
+                    if result.document_type and "document_type" not in render_fields:
+                        render_fields["document_type"] = result.document_type
+                    template = self._category_template(sample.category_path)
+                    result.suggested_filename = rename_service.render(
+                        template, render_fields, Path(result.file_path).suffix
+                    )
+                    sample.usage_count += 1
+                    self.db.commit()
+                    logger.info(
+                        "格式样本命中 #%s %s -> %s (score=%.3f)",
+                        sample.id, path.name, sample.category_path, sample_score,
+                    )
+                    return result
 
             # 4.5 识别模板匹配（同类文件"记性"）：命中且关键字段齐全 -> 直接自动归档，跳过 AI
             tpl = self._match_template(best.category_name if best else None, fields_dict)

@@ -70,6 +70,10 @@ class TestColumnMap:
         assert cmap["company"] == "供应商"
         assert cmap["seller"] == "采购商名称"
         assert cmap["date"] == "采购合同签订日期"
+        # 销售侧：销售合同金额 / 销售合同签订日期 / 第二个"单价"
+        assert cmap["amount_sale"] == "销售合同金额"
+        assert cmap["date_sale"] == "销售合同签订日期"
+        assert cmap["unit_price_sale"] == "单价"  # 第二个"单价"列
 
     def test_detect_key_column(self):
         assert detect_key_column(CLOUD_HEADERS) == "销售合同编号OA"
@@ -297,3 +301,77 @@ class TestClassifierIntegration:
         assert result.fields["vessel"] == ("伦敦勇士号", 1.0, "EXCEL")
         assert result.field_values["material"] == "PB粉"
         assert result.field_values["amount"] == "7650000"
+
+
+class TestSideSelection:
+    """同一台账含采购/销售双侧：按合同前缀选对应侧金额。"""
+
+    DUAL_HEADERS = [
+        "采购合同签订日期", "供应商", "船名", "物料名称", "单价", "数量", "采购合同金额",
+        "销售合同编号OA", "销售合同签订日期", "采购商名称", "单价", "销售合同金额",
+    ]
+
+    def _write(self, tmp_path, rows):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "云创总合同"
+        ws.append(self.DUAL_HEADERS)
+        for r in rows:
+            ws.append([
+                r.get("date", ""), r.get("company", ""), r.get("vessel", ""), r.get("material", ""),
+                r.get("unit_price", ""), r.get("quantity", ""), r.get("amount", ""),
+                r.get("contract_no", ""), r.get("date_sale", ""), r.get("seller", ""),
+                r.get("unit_price_sale", ""), r.get("amount_sale", ""),
+            ])
+        path = tmp_path / "dual.xlsx"
+        wb.save(str(path))
+        return str(path)
+
+    def _setup(self, db, path):
+        src = ExcelSource(name="dual.xlsx", file_path=path, enabled=True, total_sheets=1)
+        db.add(src)
+        db.flush()
+        db.add(ExcelSheetConfig(
+            source_id=src.id, sheet_name="云创总合同", enabled=True,
+            column_map=json.dumps({
+                "contract_no": "销售合同编号OA", "vessel": "船名", "material": "物料名称",
+                "quantity": "数量", "unit_price": "单价", "amount": "采购合同金额",
+                "company": "供应商", "seller": "采购商名称", "date": "采购合同签订日期",
+                "amount_sale": "销售合同金额", "date_sale": "销售合同签订日期",
+                "unit_price_sale": "单价",
+            }, ensure_ascii=False),
+            key_column="销售合同编号OA",
+        ))
+        db.commit()
+        excel_matcher.reload_source(db, src.id)
+
+    def test_sale_contract_uses_sale_amount(self, db, tmp_path):
+        # 同一行：采购金额 3400000，销售金额 3417350
+        path = self._write(tmp_path, [{
+            "contract_no": "SJWLXS（DD）-2026-YC0452", "vessel": "维克", "material": "托克粉",
+            "quantity": "5000", "unit_price": "680", "amount": "3400000",
+            "company": "青岛中资钢联", "seller": "山西宏达", "date": "2026-08-13",
+            "unit_price_sale": "683.47", "amount_sale": "3417350", "date_sale": "2026-08-13",
+        }])
+        self._setup(db, path)
+        r = excel_matcher.match(db, {"contract_no": "SJWLXS（DD）-2026-YC0452"})
+        assert r.matched
+        # 销售合同（SJWLXS）用销售侧金额/单价
+        assert r.fields["amount"] == "3417350"
+        assert r.fields["unit_price"] == "683.47"
+
+    def test_purchase_contract_uses_purchase_amount(self, db, tmp_path):
+        path = self._write(tmp_path, [{
+            "contract_no": "SJWLCG（DD）-2026-YC0531", "vessel": "维克", "material": "托克粉",
+            "quantity": "5000", "unit_price": "680", "amount": "3400000",
+            "company": "青岛中资钢联", "seller": "山西宏达", "date": "2026-08-13",
+            "unit_price_sale": "683.47", "amount_sale": "3417350", "date_sale": "2026-08-13",
+        }])
+        self._setup(db, path)
+        r = excel_matcher.match(db, {"contract_no": "SJWLCG（DD）-2026-YC0531"})
+        assert r.matched
+        # 采购合同用采购侧金额/单价
+        assert r.fields["amount"] == "3400000"
+        assert r.fields["unit_price"] == "680"
+

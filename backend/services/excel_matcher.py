@@ -123,7 +123,11 @@ def _norm_date(v) -> str:
 
 
 def detect_column_map(headers: list[str]) -> dict[str, str]:
-    """根据表头自动识别标准字段 -> Excel 列名。返回 {标准字段: 原列名}。"""
+    """根据表头自动识别标准字段 -> Excel 列名。返回 {标准字段: 原列名}。
+
+    同一台账常同时含采购侧与销售侧（采购合同金额 / 销售合同金额、两个单价列），
+    额外识别 *_sale 侧字段，供按合同前缀（SJWLXS/HSYCXS=销售）选择对应侧。
+    """
     normalized = {_norm_col(h): h for h in headers if h}
     result: dict[str, str] = {}
     for std_field, aliases in COLUMN_ALIASES.items():
@@ -131,6 +135,33 @@ def detect_column_map(headers: list[str]) -> dict[str, str]:
             if alias in normalized:
                 result[std_field] = normalized[alias]
                 break
+
+    # 销售侧专用字段（采购侧为主，销售侧单独存 *_sale）
+    for alias in ("销售合同金额", "销售结算金额", "销售金额"):
+        key = _norm_col(alias)
+        if key in normalized:
+            result["amount_sale"] = normalized[key]
+            break
+    for alias in ("销售合同签订日期", "销售日期"):
+        key = _norm_col(alias)
+        if key in normalized:
+            result["date_sale"] = normalized[key]
+            break
+    for alias in ("销售单价",):
+        key = _norm_col(alias)
+        if key in normalized:
+            result["unit_price_sale"] = normalized[key]
+            break
+    # 表头出现两个"单价"列：第二个视为销售单价
+    if "unit_price_sale" not in result:
+        if [(_norm_col(h)) for h in headers if h].count("单价") >= 2:
+            seen = 0
+            for h in headers:
+                if h is not None and _norm_col(h) == "单价":
+                    seen += 1
+                    if seen == 2:
+                        result["unit_price_sale"] = h
+                        break
     return result
 
 
@@ -268,35 +299,41 @@ class ExcelMatcher:
 
             # 表头定位：前 10 行内找能命中 >=2 个映射列的一行
             header_names: list = []
-            header_map: dict[str, int] = {}
+            header_map: dict[str, list[int]] = {}
             header_idx = -1
             for i, r in enumerate(all_rows[:10]):
                 norm = {_norm_col(str(c)) if c is not None else "": c for c in r}
                 hits = sum(1 for v in col_map.values() if v and _norm_col(str(v)) in norm)
                 if hits >= 2:
                     header_names = list(r)
-                    header_map = {_norm_col(str(c)): i2 for i2, c in enumerate(r) if c is not None}
+                    for i2, c in enumerate(r):
+                        if c is not None:
+                            header_map.setdefault(_norm_col(str(c)), []).append(i2)
                     header_idx = i
                     break
             if header_idx < 0 or not header_map:
                 return []
 
-            # 标准字段 -> 列下标
+            # 标准字段 -> 列下标（同名列保留多位置：unit_price_sale 取第二个"单价"）
             std_col_idx: dict[str, int] = {}
             for std, excel_col in col_map.items():
                 if not excel_col:
                     continue
-                idx = header_map.get(_norm_col(str(excel_col)))
-                if idx is not None:
-                    std_col_idx[std] = idx
+                idxs = header_map.get(_norm_col(str(excel_col)), [])
+                if not idxs:
+                    continue
+                idx = idxs[0]
+                if std == "unit_price_sale" and col_map.get("unit_price") == excel_col and len(idxs) > 1:
+                    idx = idxs[1]
+                std_col_idx[std] = idx
             if not std_col_idx:
                 return []
 
             # 收集所有"合同编号/合同号"列（含主键列），作为备选匹配键
             contract_cols: list[int] = []
-            for h, i in header_map.items():
+            for h, idxs in header_map.items():
                 if "合同" in h and ("编号" in h or h.endswith("合同号")):
-                    contract_cols.append(i)
+                    contract_cols.extend(idxs)
 
             rows: list[dict] = []
             for row in all_rows[header_idx + 1:]:
@@ -396,13 +433,26 @@ class ExcelMatcher:
 
     def _build_result(self, sheet: _LoadedSheet, row_idx: int, matched_field: str, key: str, fv: dict) -> ExcelMatchResult:
         row = sheet.rows[row_idx]
+        # 合同前缀判销售/采购侧：SJWLXS / HSYCXS = 销售合同，用销售侧金额/单价/日期
+        _cn = str(row.get("contract_no", "") or "").upper()
+        _is_sale = ("SJWLXS" in _cn) or ("HSYCXS" in _cn)
         # 只覆盖 Excel 行中存在的标准字段（与 OCR 字段合并，EXCEL 优先）
         overrides: dict[str, str] = {}
         for k, v in row.items():
             if k.startswith("_"):
                 continue  # 跳过 __contracts 等内部字段
-            if v is not None and str(v).strip() != "":
-                overrides[k] = str(v)
+            if v is None or str(v).strip() == "":
+                continue
+            if k.endswith("_sale"):
+                # 销售侧值：仅销售合同使用
+                if _is_sale:
+                    overrides[k[:-5]] = str(v)
+                continue
+            # 普通键（采购侧）：若为销售合同且存在销售侧值，让销售侧覆盖
+            if _is_sale and k in ("amount", "unit_price", "date"):
+                if f"{k}_sale" in row and str(row.get(f"{k}_sale", "") or "").strip() != "":
+                    continue
+            overrides[k] = str(v)
         return ExcelMatchResult(
             matched=True,
             source_name=sheet.source_name,
