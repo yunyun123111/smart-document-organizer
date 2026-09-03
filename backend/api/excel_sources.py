@@ -105,6 +105,45 @@ def upload_source(file: UploadFile, db: Session = Depends(get_db)):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"无法解析 Excel 文件: {e}") from e
 
+    # 同名更新：重新上传同名工作簿视为"更新该数据源"（内容新增/修正后重传）。
+    # 保留 source id 与 name，替换文件副本 + 重新扫描列映射 + 重建 sheet 配置，
+    # 避免产生新旧两个数据源导致匹配混乱（旧数据源优先命中）。
+    same = (
+        db.query(ExcelSource)
+        .filter(ExcelSource.name == file.filename)
+        .order_by(ExcelSource.id.desc())
+        .first()
+    )
+    if same is not None:
+        old_file = Path(same.file_path)
+        old_cfgs = {oc.sheet_name: oc for oc in same.sheets}
+        for oc in same.sheets:
+            db.delete(oc)
+        db.flush()
+        same.file_hash = file_hash
+        same.total_sheets = len(sheets_info)
+        same.file_path = str(target)
+        if old_file.exists() and str(old_file.resolve()) != str(target.resolve()):
+            old_file.unlink(missing_ok=True)
+        db.flush()
+        for sheet_name, info in sheets_info.items():
+            old_cfg = old_cfgs.get(sheet_name)
+            db.add(ExcelSheetConfig(
+                source_id=same.id,
+                sheet_name=sheet_name,
+                enabled=old_cfg.enabled if old_cfg else bool(info["column_map"]),
+                doc_type_hint=old_cfg.doc_type_hint if old_cfg else "",
+                column_map=json.dumps(info["column_map"], ensure_ascii=False),
+                key_column=info["key_column"],
+                row_count=0,
+            ))
+        db.commit()
+        excel_matcher.reload_source(db, same.id)
+        logger.info("Excel 数据源同名更新：替换 #%s（%s，%d 个 sheet）",
+                    same.id, file.filename, len(sheets_info))
+        return {"ok": True, "duplicate": False, "replaced": True,
+                "source": db.get(ExcelSource, same.id).to_dict()}
+
     src = ExcelSource(
         name=file.filename, file_path=str(target), file_hash=file_hash,
         enabled=True, total_sheets=len(sheets_info),
