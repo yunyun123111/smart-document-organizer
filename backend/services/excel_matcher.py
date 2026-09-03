@@ -167,8 +167,9 @@ class ExcelMatchResult:
 
 class _LoadedSheet:
     """一个已加载并建好索引的 sheet。"""
-    def __init__(self, cfg: ExcelSheetConfig, rows: list[dict]):
+    def __init__(self, cfg: ExcelSheetConfig, rows: list[dict], source_name: str = ""):
         self.cfg = cfg
+        self.source_name = source_name
         self.rows = rows
         # 主索引：规范合同号 -> [row_idx]
         self.by_contract: dict[str, list[int]] = {}
@@ -229,7 +230,7 @@ class ExcelMatcher:
                 continue
             try:
                 rows = self._parse_sheet(Path(src.file_path), cfg)
-                loaded.append(_LoadedSheet(cfg, rows))
+                loaded.append(_LoadedSheet(cfg, rows, src.name))
                 cfg.last_error = ""
             except Exception as e:  # noqa: BLE001
                 logger.warning("解析 Excel sheet %s/%s 失败: %s", src.name, cfg.sheet_name, e)
@@ -404,7 +405,7 @@ class ExcelMatcher:
                 overrides[k] = str(v)
         return ExcelMatchResult(
             matched=True,
-            source_name=sheet.cfg.source.name if sheet.cfg.source else "",
+            source_name=sheet.source_name,
             sheet_name=sheet.cfg.sheet_name,
             key=key,
             matched_field=matched_field,

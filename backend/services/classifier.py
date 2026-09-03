@@ -151,8 +151,12 @@ class ClassifierService:
             # 命中则用 Excel 行字段覆盖 OCR 结果，命名 / 归档更准。
             from backend.services.excel_matcher import excel_matcher
 
-            em = excel_matcher.match(self.db, result.field_values)
-            if em.matched:
+            try:
+                em = excel_matcher.match(self.db, result.field_values)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Excel 登记表匹配异常（已跳过，不影响识别）: %s", e)
+                em = None
+            if em and em.matched:
                 for k, v in em.fields.items():
                     result.field_values[k] = v
                     result.fields[k] = (v, 1.0, "EXCEL")
