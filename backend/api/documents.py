@@ -41,6 +41,7 @@ from backend.services.recycle_service import recycle_service
 from backend.services.processing_service import processing_service
 from backend.utils.file_utils import get_file_type, get_mime_type
 from backend.utils.filename_utils import safe_filename, unique_filename
+from backend.utils.fs_path import fs_exists, fs_path
 from backend.utils.hash_utils import sha256_file
 from backend.utils.logger import get_logger
 
@@ -320,10 +321,11 @@ def get_document_file(doc_id: int, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
     path = Path(doc.current_path)
-    if not path.exists():
+    if not fs_exists(path):
         raise HTTPException(status_code=404, detail="文件已被移动或删除")
     media_type = doc.mime_type or "application/octet-stream"
-    return FileResponse(str(path), media_type=media_type, filename=doc.current_filename)
+    # fs_path：长路径（>260）自动转 \\?\ 前缀，否则 FileResponse 打不开
+    return FileResponse(fs_path(path), media_type=media_type, filename=doc.current_filename)
 
 
 class RenameRequest(BaseModel):
@@ -333,7 +335,7 @@ class RenameRequest(BaseModel):
 def _do_rename(db: Session, doc: Document, base: str) -> tuple[str, Path, bool]:
     """重命名文档磁盘文件并更新记录。返回 (新文件名, 新路径, 是否变化)。"""
     src = Path(doc.current_path or doc.original_path)
-    if not src.exists():
+    if not fs_exists(src):
         raise HTTPException(status_code=400, detail="磁盘文件不存在，无法重命名")
     ext = src.suffix
     base = (base or "").strip().strip('"')
@@ -344,7 +346,7 @@ def _do_rename(db: Session, doc: Document, base: str) -> tuple[str, Path, bool]:
         return src.name, src, False
     target = unique_filename(src.parent, new_name)
     try:
-        shutil.move(str(src), str(target))
+        shutil.move(fs_path(src), fs_path(target))
     except OSError as e:
         logger.error("重命名失败 %s -> %s: %s", src, target, e)
         raise HTTPException(status_code=500, detail=f"文件重命名失败: {e}")

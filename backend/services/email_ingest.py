@@ -28,6 +28,7 @@ from backend.database import SessionLocal
 from backend.models import Document, STATUS_PENDING
 from backend.utils.file_utils import get_file_type, get_mime_type
 from backend.utils.filename_utils import safe_filename, unique_filename
+from backend.utils.fs_path import ensure_writable
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.email_ingest")
@@ -136,7 +137,12 @@ def _connect() -> imaplib.IMAP4 | imaplib.IMAP4_SSL:
 def _save_attachments(msg) -> list[Path]:
     saved: list[Path] = []
     inbox = Path(settings.INBOX_ROOT)
-    inbox.mkdir(parents=True, exist_ok=True)
+    # 收件箱只读/不可用：明确记录错误并跳过本轮，不静默失败
+    writable_err = ensure_writable(inbox)
+    if writable_err:
+        _set_status(last_error=f"收件箱不可写：{writable_err}", last_count=0)
+        logger.error("邮箱附件落盘失败：%s", writable_err)
+        return saved
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
@@ -153,7 +159,10 @@ def _save_attachments(msg) -> list[Path]:
         # 统一安全命名：safe_filename 处理非法字符/保留字/长度，unique_filename 防重名
         target = unique_filename(inbox, safe_filename(Path(filename).stem or "邮件附件", ext))
         try:
-            target.write_bytes(payload)
+            from backend.utils.fs_path import fs_path
+
+            with open(fs_path(target), "wb") as f:
+                f.write(payload)
             saved.append(target)
             logger.info("邮件附件已保存: %s", target.name)
         except OSError:

@@ -101,7 +101,9 @@ class Settings(BaseSettings):
         return Path(self.LOG_DIR)
 
     def ensure_dirs(self) -> None:
-        """确保所有运行所需目录存在。"""
+        """确保所有运行所需目录存在（支持 Windows 长路径）。"""
+        from backend.utils.fs_path import fs_mkdir
+
         for p in (
             self.document_root,
             self.inbox_root,
@@ -112,7 +114,7 @@ class Settings(BaseSettings):
             if self.DATABASE_URL.startswith("sqlite")
             else BASE_DIR / "data/database",
         ):
-            p.mkdir(parents=True, exist_ok=True)
+            fs_mkdir(p)
 
     def confidence_weights(self) -> dict[str, float]:
         """返回置信度权重字典（规则/字段/关键词/AI）。"""

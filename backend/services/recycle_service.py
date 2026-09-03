@@ -29,9 +29,10 @@ from backend.models import (
     Document,
     RecycleBinItem,
 )
-from backend.services.file_service import FileOperationError, ensure_directory, move_file
+from backend.services.file_service import FileOperationError, ensure_directory, move_file, os_unlink
 from backend.services.operation_service import log_operation
 from backend.utils.filename_utils import safe_filename
+from backend.utils.fs_path import fs_exists, fs_isfile
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.recycle_service")
@@ -54,13 +55,13 @@ def _recycle_target_dir(now: datetime | None = None) -> Path:
 
 def _unique_target(target: Path) -> Path:
     """目标已存在时递增后缀（xxx_001.ext），绝不覆盖已有文件。"""
-    if not target.exists():
+    if not fs_exists(target):
         return target
     stem, suffix = target.stem, target.suffix
     i = 1
     while True:
         candidate = target.with_name(f"{stem}_{i:03d}{suffix}")
-        if not candidate.exists():
+        if not fs_exists(candidate):
             return candidate
         i += 1
 
@@ -84,7 +85,7 @@ class RecycleService:
         target: Path | None = None
         try:
             # ---- 1. 移动文件（若存在）----
-            if src and src.is_file():
+            if src and fs_isfile(src):
                 target = _unique_target(
                     _recycle_target_dir() / f"{document.id}_{safe_filename(src.name)}"
                 )
@@ -171,7 +172,7 @@ class RecycleService:
             )
         # 回收站内文件已丢失：仍可恢复记录（保留原信息），提示文件缺失
         src = Path(item.recycle_path)
-        file_missing = not src.is_file()
+        file_missing = not fs_isfile(src)
 
         # ---- 1. 恢复文件（若存在）----
         original_target = Path(item.original_path or item.current_path or "")
@@ -236,8 +237,8 @@ class RecycleService:
         document = db.get(Document, item.document_id)
         try:
             src = Path(item.recycle_path)
-            if src.is_file():
-                src.unlink(missing_ok=True)
+            if fs_isfile(src):
+                os_unlink(src)
             # 先记永久删除日志（此时 document_id 仍有效），再删记录
             log_operation(
                 db,
@@ -296,7 +297,7 @@ class RecycleService:
                 "original_status": i.original_status,
                 "deleted_reason": i.deleted_reason,
                 "original_file_missing": i.original_file_missing,
-                "file_exists": Path(i.recycle_path).is_file() if i.recycle_path else False,
+                "file_exists": fs_isfile(i.recycle_path) if i.recycle_path else False,
                 "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
             }
             for i in items

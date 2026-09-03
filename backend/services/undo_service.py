@@ -24,6 +24,7 @@ from backend.models import (
 from backend.services import operation_service
 from backend.services.file_service import FileOperationError, ensure_directory, move_file
 from backend.utils.filename_utils import unique_filename
+from backend.utils.fs_path import fs_exists
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.undo_service")
@@ -54,7 +55,7 @@ class UndoService:
         new_path = Path(log.new_path)
         old_path = Path(log.old_path)
 
-        if not new_path.exists():
+        if not fs_exists(new_path):
             return UndoResult(success=False, error=f"文件不存在，无法撤销: {new_path}")
 
         try:
@@ -62,7 +63,7 @@ class UndoService:
             # 原位置已被占用：递增命名恢复（_001/_002…），绝不覆盖已有文件
             restore_target = (
                 unique_filename(old_path.parent, old_path.name)
-                if old_path.exists()
+                if fs_exists(old_path)
                 else old_path
             )
             restored = move_file(new_path, restore_target)

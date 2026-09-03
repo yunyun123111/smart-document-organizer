@@ -29,10 +29,11 @@ from backend.models import (
 )
 from backend.services import operation_service
 from backend.services.duplicate_service import duplicate_service
-from backend.services.file_service import FileOperationError, ensure_directory, move_file
+from backend.services.file_service import FileOperationError, move_file
 from backend.services.rename_service import rename_service
 from backend.utils.file_utils import get_file_type, safe_join
 from backend.utils.filename_utils import safe_filename
+from backend.utils.fs_path import ensure_writable, fs_isfile, path_too_long
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.archive_service")
@@ -109,7 +110,7 @@ class ArchiveService:
     ) -> ArchiveResult:
         """归档单个文件。category_path 为分类相对路径（如 合同/销售合同）。"""
         src = Path(src_path)
-        if not src.exists():
+        if not fs_isfile(src):
             return ArchiveResult(success=False, error=f"源文件不存在: {src}")
 
         # 1. 计算 hash（耗时，放在锁外）
@@ -137,6 +138,10 @@ class ArchiveService:
         except ValueError as e:
             logger.warning("非法归档分类路径: %r", category_path)
             return ArchiveResult(success=False, error=f"分类路径非法: {e}")
+
+        # 长路径接近 Windows 260 上限时给出可读提示（仍尝试用 \\?\ 支持）
+        if path_too_long(target_dir):
+            logger.warning("归档目标路径较长(%d字符): %s", len(str(target_dir)), target_dir)
         safe_name = _safe_target_name(filename, src)
         if (Path(safe_name).name != safe_name) or safe_name in (".", ".."):
             return ArchiveResult(success=False, error=f"文件名非法: {filename!r}")
@@ -169,12 +174,15 @@ class ArchiveService:
                 original_filename=src.name,
                 original_path=str(src),
                 file_type=get_file_type(src),
-                file_size=src.stat().st_size if src.exists() else 0,
+                file_size=src.stat().st_size if fs_isfile(src) else 0,
             )
             self.db.add(doc)
             self.db.flush()  # 先拿到 id，让日志能关联到文档（撤销依赖它）
 
-        ensure_directory(target_dir)
+        # 只读/不可用目录检测：给出明确错误而非 500
+        writable_err = ensure_writable(target_dir)
+        if writable_err:
+            return ArchiveResult(success=False, error=writable_err)
 
         # 唯一文件名（禁止覆盖；allow_overwrite=True 时改为覆盖旧文件）
         target = rename_service.build_unique_path(

@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from backend.utils.fs_path import fs_exists
+
 # Windows 文件名非法字符
 ILLEGAL_CHARS = r'\\/:*?"<>|'
 _ILLEGAL_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
@@ -61,14 +63,14 @@ def unique_filename(directory: Path, filename: str, allow_overwrite: bool = Fals
     - 否则重名自动递增：文件.pdf -> 文件_001.pdf -> 文件_002.pdf
     """
     target = directory / filename
-    if allow_overwrite or not target.exists():
+    if allow_overwrite or not fs_exists(target):
         return target
 
     stem = Path(filename).stem
     ext = Path(filename).suffix
     for i in range(1, 10000):
         candidate = directory / f"{stem}_{i:03d}{ext}"
-        if not candidate.exists():
+        if not fs_exists(candidate):
             return candidate
     # 极端情况：递增到上限仍冲突，加时间戳
     import time

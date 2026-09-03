@@ -39,6 +39,7 @@ from backend.services.classifier import ClassifierService
 from backend.services.duplicate_service import duplicate_service
 from backend.services.operation_service import log_operation
 from backend.utils.file_utils import get_file_type, get_mime_type
+from backend.utils.fs_path import ensure_writable, fs_exists, fs_isfile
 from backend.utils.hash_utils import sha256_file
 from backend.utils.logger import get_logger
 
@@ -64,13 +65,17 @@ class ProcessingService:
         recycle_root = settings.recycle_bin_root.resolve()
         if src == recycle_root or recycle_root in src.parents:
             raise ValueError("回收站目录不能作为待整理目录")
-        if not src.exists():
+        if not fs_exists(src):
             raise FileNotFoundError(f"待整理目录不存在: {src}")
+        # inbox 只读/不可用：阻止整理任务启动，给出明确提示
+        writable_err = ensure_writable(src)
+        if writable_err:
+            raise PermissionError(f"无法启动整理任务：{writable_err}")
 
         # 跳过隐藏文件（.xxx）与 Office 临时文件（~$xxx），避免误扫与浪费
         files = [
             p for p in src.iterdir()
-            if p.is_file()
+            if fs_isfile(p)
             and not p.name.startswith((".", "~$"))
             and get_file_type(p) != "unknown"
         ]
@@ -150,7 +155,7 @@ class ProcessingService:
                 if not p:
                     continue
                 fp = Path(p)
-                if fp.is_file():
+                if fs_isfile(fp):
                     files.append(fp)
         if not files:
             return self._launch([], src)
