@@ -5,7 +5,6 @@ import {
   checkEmailNow,
   createFilenameRule,
   deleteFilenameRule,
-  deleteRecognitionTemplate,
   getConfigCheck,
   getEmailStatus,
   getRelocateStatus,
@@ -13,13 +12,10 @@ import {
   relocateDocuments,
   listCategoriesFlat,
   listFilenameRules,
-  listRecognitionTemplates,
   updateFilenameRule,
   updateSettings,
-  updateRecognitionTemplate,
   type CategoryNode,
   type FilenameRule,
-  type RecognitionTemplate,
   type Settings,
   type BackupInfo,
   createBackup,
@@ -71,9 +67,6 @@ const flatCats = ref<CategoryNode[]>([])
 const fnForm = ref({ pattern: '', category_id: 0, note: '' })
 const fnLoading = ref(false)
 
-// 识别模板（同类文件自动归档）
-const templates = ref<RecognitionTemplate[]>([])
-const tplLoading = ref(false)
 
 // 邮箱接收状态
 const emailStatus = ref<{ running: boolean; enabled: boolean; last_check?: string; last_error?: string | null; last_count?: number } | null>(null)
@@ -199,28 +192,6 @@ async function doCheckEmail() {
   }
 }
 
-async function loadTemplates() {
-  tplLoading.value = true
-  try {
-    templates.value = await listRecognitionTemplates()
-  } finally {
-    tplLoading.value = false
-  }
-}
-
-async function toggleTemplate(t: RecognitionTemplate) {
-  await updateRecognitionTemplate(t.id, { enabled: !t.enabled })
-  t.enabled = !t.enabled
-  ElMessage.success(t.enabled ? '已启用，同类型文件将自动归档' : '已停用')
-}
-
-async function removeTemplate(t: RecognitionTemplate) {
-  await ElMessageBox.confirm(`删除「${t.document_type}」模板？删除后该类型文件将重新走人工审核。`, '删除确认', { type: 'warning' })
-  await deleteRecognitionTemplate(t.id)
-  ElMessage.success('已删除')
-  await loadTemplates()
-}
-
 async function load() {
   form.value = await getSettings()
   aiApiKey.value = ''
@@ -228,7 +199,6 @@ async function load() {
   emailPassword.value = ''
   loaded.value = true
   await loadFnRules()
-  await loadTemplates()
   await loadEmailStatus()
   await loadRelocateStatus()
   await loadBackups()
@@ -573,35 +543,6 @@ onMounted(load)
           <el-button type="primary" @click="addFnRule">添加</el-button>
         </el-form-item>
       </el-form>
-    </el-card>
-
-    <el-card shadow="never" class="mb16">
-      <template #header><span>已学习的识别模板（同类文件自动归档）</span></template>
-      <div class="gray small mb8">
-        人工审核确认归档后，系统会记住该类型文件的归档方式；下次再遇同类型且关键字段齐全的文件，自动归档、不进人工审核、不耗 AI。
-        可在此停用或删除模板。
-      </div>
-      <el-table :data="templates" size="small" v-loading="tplLoading" style="width: 100%">
-        <el-table-column prop="document_type" label="文档类型" width="120" />
-        <el-table-column prop="category_path" label="归档分类" min-width="150" />
-        <el-table-column label="关键字段" min-width="200">
-          <template #default="{ row }">
-            <el-tag v-for="f in row.require_fields" :key="f" size="small" class="mr4">{{ f }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="usage_count" label="已自动归档" width="90" />
-        <el-table-column label="启用" width="70">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled" @change="toggleTemplate(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="70">
-          <template #default="{ row }">
-            <el-button link type="danger" @click="removeTemplate(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-empty v-if="!tplLoading && templates.length === 0" description="暂无模板——确认归档后会在这里自动生成" :image-size="60" />
     </el-card>
 
     <el-card shadow="never" class="mb16">

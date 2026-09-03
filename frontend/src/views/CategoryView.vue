@@ -4,21 +4,16 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createCategory,
   createRule,
-  createSample,
   createTemplate,
   deleteCategory,
   deleteRule,
-  deleteSample,
   deleteTemplate,
   listCategories,
   listRules,
-  listSamples,
   listTemplates,
   updateCategory,
   updateRule,
-  updateSample,
   type CategoryNode,
-  type DocumentSampleItem,
   type RenameTemplate,
   type Rule,
 } from '@/api'
@@ -38,41 +33,12 @@ const ruleForm = ref({ keyword: '', match_type: 'contains', priority: 0, weight:
 const tplDialog = ref(false)
 const tplForm = ref({ template: '{日期}_{类型}_{公司}_{编号}' })
 
-// ---------- 格式样本 ----------
-const samples = ref<DocumentSampleItem[]>([])
-const sampleLoading = ref(false)
-const uploading = ref(false)
-const sampleFile = ref<File | null>(null)
-const sampleForm = ref({ document_type: '', category_path: '' })
-const catPaths = ref<string[]>([])
-const featureDialog = ref(false)
-const featureData = ref<DocumentSampleItem | null>(null)
-
-function collectPaths(nodes: CategoryNode[]): string[] {
-  const out: string[] = []
-  for (const n of nodes) {
-    out.push(n.path)
-    if (n.children?.length) out.push(...collectPaths(n.children))
-  }
-  return out
-}
-
 async function load() {
   loading.value = true
   try {
     tree.value = await listCategories()
-    catPaths.value = collectPaths(tree.value)
   } finally {
     loading.value = false
-  }
-}
-
-async function loadSamples() {
-  sampleLoading.value = true
-  try {
-    samples.value = await listSamples()
-  } finally {
-    sampleLoading.value = false
   }
 }
 
@@ -141,70 +107,13 @@ function openCreate(parent: CategoryNode | null) {
   catDialog.value = true
 }
 
-// ---------- 样本操作 ----------
-function onFileChange(uploadFile: { raw?: File }) {
-  sampleFile.value = uploadFile.raw ?? null
-}
-
-async function uploadSample() {
-  if (!sampleFile.value) {
-    ElMessage.warning('请先选择样本文件')
-    return
-  }
-  if (!sampleForm.value.document_type.trim()) {
-    ElMessage.warning('请填写文档类型')
-    return
-  }
-  if (!sampleForm.value.category_path) {
-    ElMessage.warning('请选择归档分类')
-    return
-  }
-  uploading.value = true
-  try {
-    const fd = new FormData()
-    fd.append('file', sampleFile.value)
-    fd.append('document_type', sampleForm.value.document_type.trim())
-    fd.append('category_path', sampleForm.value.category_path)
-    await createSample(fd)
-    ElMessage.success('样本已学习，后续同版式文档将自动归档')
-    sampleForm.value.document_type = ''
-    sampleFile.value = null
-    await loadSamples()
-  } finally {
-    uploading.value = false
-  }
-}
-
-async function toggleSample(s: DocumentSampleItem) {
-  await updateSample(s.id, { enabled: s.enabled })
-}
-
-async function removeSample(s: DocumentSampleItem) {
-  try {
-    await ElMessageBox.confirm(`删除样本「${s.original_filename}」？`, '提示', { type: 'warning' })
-  } catch {
-    return
-  }
-  await deleteSample(s.id)
-  ElMessage.success('已删除')
-  await loadSamples()
-}
-
-function showFeatures(s: DocumentSampleItem) {
-  featureData.value = s
-  featureDialog.value = true
-}
-
 const matchTypes = [
   { label: '包含', value: 'contains' },
   { label: '完全匹配', value: 'exact' },
   { label: '正则', value: 'regex' },
 ]
 
-onMounted(() => {
-  load()
-  loadSamples()
-})
+onMounted(load)
 </script>
 
 <template>
@@ -309,55 +218,6 @@ onMounted(() => {
     </el-col>
   </el-row>
 
-  <!-- 格式样本（自动学习） -->
-  <el-card shadow="never" class="mb16 sample-card">
-    <template #header>
-      <div class="head">
-        <span>格式样本（自动学习）</span>
-        <span class="gray small">上传清晰样本 → 学习版式指纹 → 后续同版式文档自动归档（纯本地、零 AI 消耗）</span>
-      </div>
-    </template>
-    <div class="sample-upload">
-      <el-upload
-        :auto-upload="false"
-        :limit="1"
-        :show-file-list="true"
-        :on-change="onFileChange"
-        :on-remove="() => onFileChange({} as any)"
-      >
-        <el-button>选择样本文件</el-button>
-      </el-upload>
-      <el-input v-model="sampleForm.document_type" placeholder="文档类型，如：销售合同" style="width: 200px" />
-      <el-select v-model="sampleForm.category_path" placeholder="归档分类" style="width: 220px">
-        <el-option v-for="p in catPaths" :key="p" :label="p" :value="p" />
-      </el-select>
-      <el-button type="primary" :loading="uploading" @click="uploadSample">学习样本</el-button>
-    </div>
-    <el-table :data="samples" size="small" v-loading="sampleLoading" class="mt8">
-      <el-table-column prop="document_type" label="文档类型" width="120" />
-      <el-table-column prop="category_path" label="归档分类" width="170" />
-      <el-table-column prop="original_filename" label="样本文件" min-width="180" show-overflow-tooltip />
-      <el-table-column label="特征" width="190">
-        <template #default="{ row }">
-          <span class="gray small">{{ row.summary?.labels ?? 0 }}词 / {{ row.summary?.grams ?? 0 }}gram / {{ row.summary?.fields?.length ?? 0 }}字段</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="usage_count" label="命中" width="70" />
-      <el-table-column label="启用" width="70">
-        <template #default="{ row }">
-          <el-switch v-model="row.enabled" @change="toggleSample(row)" />
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="130">
-        <template #default="{ row }">
-          <el-button link type="primary" @click="showFeatures(row)">特征</el-button>
-          <el-button link type="danger" @click="removeSample(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    <el-empty v-if="!sampleLoading && !samples.length" description="还没有格式样本，上传一份清晰文档开始学习" :image-size="60" />
-  </el-card>
-
   <!-- 分类对话框 -->
   <el-dialog v-model="catDialog" title="新建分类" width="420px">
     <el-form label-width="80px">
@@ -407,25 +267,6 @@ onMounted(() => {
       <el-button type="primary" @click="saveTemplate">保存</el-button>
     </template>
   </el-dialog>
-
-  <!-- 样本特征对话框 -->
-  <el-dialog v-model="featureDialog" title="样本特征" width="640px">
-    <template v-if="featureData">
-      <p class="m0"><b>{{ featureData.original_filename }}</b></p>
-      <p class="gray small m0 mt4">类型：{{ featureData.document_type }}　归档：{{ featureData.category_path }}</p>
-      <el-descriptions :column="2" size="small" border class="mt8">
-        <el-descriptions-item label="字符数">{{ featureData.summary?.stats?.chars ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="行数">{{ featureData.summary?.stats?.lines ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="数字占比">{{ featureData.summary?.stats?.digit_ratio ?? '-' }}</el-descriptions-item>
-        <el-descriptions-item label="命中次数">{{ featureData.usage_count }}</el-descriptions-item>
-      </el-descriptions>
-      <div class="mt8">
-        <div class="gray small mb4">可提取字段（锚点）</div>
-        <el-tag v-for="f in featureData.summary?.fields ?? []" :key="f" size="small" class="mr4 mb4">{{ f }}</el-tag>
-        <div v-if="!(featureData.summary?.fields?.length)" class="gray small">无</div>
-      </div>
-    </template>
-  </el-dialog>
 </template>
 
 <style scoped>
@@ -433,15 +274,8 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 .mb16 { margin-bottom: 16px; }
-.mt8 { margin-top: 8px; }
-.mt4 { margin-top: 4px; }
-.mb4 { margin-bottom: 4px; }
-.m0 { margin: 0; }
-.mr4 { margin-right: 4px; }
 .desc { color: #909399; margin: 0; font-size: 13px; }
 .tree-node {
   flex: 1;
@@ -453,12 +287,10 @@ onMounted(() => {
 .del { color: #f56c6c; }
 .gray { color: #909399; }
 .small { font-size: 12px; }
-.sample-card { margin-top: 16px; }
-.sample-upload {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  flex-wrap: wrap;
+.mt8 { margin-top: 8px; }
+.cat-tree {
+  max-height: 70vh;
+  overflow: auto;
 }
 @media (max-width: 768px) {
   .cat-tree {
@@ -467,10 +299,6 @@ onMounted(() => {
   .head .el-button {
     padding-left: 10px;
     padding-right: 10px;
-  }
-  .sample-upload .el-input,
-  .sample-upload .el-select {
-    width: 100% !important;
   }
 }
 </style>

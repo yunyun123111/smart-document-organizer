@@ -34,6 +34,12 @@ const router = createRouter({
       meta: { title: '分类管理' },
     },
     {
+      path: '/memories',
+      name: 'memories',
+      component: () => import('@/views/MemoryView.vue'),
+      meta: { title: '自动归档' },
+    },
+    {
       path: '/logs',
       name: 'logs',
       component: () => import('@/views/LogsView.vue'),
