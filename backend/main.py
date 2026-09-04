@@ -99,18 +99,28 @@ async def access_password_middleware(request: Request, call_next):
 # 访问 http://127.0.0.1:8000 即可，无需再单独启动前端 dev server。
 BASE_DIR = Path(__file__).resolve().parent.parent
 _FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+class _CachedStaticFiles(StaticFiles):
+    """静态资源（文件名含内容哈希）带 immutable 长缓存，避免浏览器重复下载。"""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 if _FRONTEND_DIST.exists():
     app.mount(
         "/assets",
-        StaticFiles(directory=str(_FRONTEND_DIST / "assets")),
+        _CachedStaticFiles(directory=str(_FRONTEND_DIST / "assets")),
         name="assets",
     )
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def _serve_spa(full_path: str):
         # 非 /api 的路径交给前端路由；存在真实文件则返回文件，否则回退 index.html
+        # index.html 及非哈希静态文件不缓存，保证发布后浏览器立即拿到最新版
         if full_path:
             candidate = _FRONTEND_DIST / full_path
             if candidate.is_file():
-                return FileResponse(str(candidate))
-        return FileResponse(str(_FRONTEND_DIST / "index.html"))
+                return FileResponse(str(candidate), headers={"Cache-Control": "no-cache"})
+        return FileResponse(str(_FRONTEND_DIST / "index.html"), headers={"Cache-Control": "no-cache"})
