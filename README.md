@@ -56,6 +56,14 @@ npm install
 npm run dev                     # http://localhost:5173 （/api 自动代理到后端 8000）
 ```
 
+## 环境变量与安全
+
+- **配置**：复制 `.env.example` 为 `.env` 后按需填写（AI API Key、目录路径等）。不配置 AI 时系统自动降级为纯规则 + OCR 识别，不影响基本功能。
+- **密钥保护**：`.env` 中含你的 **AI API Key 等敏感凭据**，已被 `.gitignore` 排除，**严禁提交到 Git / GitHub，也不要发给他人**。仓库中的 `.env.example` 只是空模板。
+- **敏感数据保护**：`data/`（真实业务资料与数据库）、日志等运行数据均已加入 `.gitignore`，不会进入版本管理。
+- **其他已排除**：`frontend/node_modules`、`frontend/dist`（前端构建产物）、`frontend/*.tsbuildinfo`（编译缓存）、`build_portable/`（便携包构建产物）。
+- **换环境部署**：clone 仓库后需 `pip install -r requirements.txt`、`cd frontend && npm install && npm run build`，再复制 `.env.example` 为 `.env` 填写即可运行。
+
 ## 测试
 
 ```bash
