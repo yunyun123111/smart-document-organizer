@@ -22,6 +22,7 @@ from backend.models import (
 from backend.services.business_archive_service import (
     BusinessArchiveError,
     BusinessArchiveService,
+    compute_completeness,
 )
 
 svc = BusinessArchiveService()
@@ -304,3 +305,79 @@ class TestArchiveAutoLink:
         assert result.success
         assert _count(db, BusinessRecord) == 0
         assert _count(db, BusinessFile) == 0
+
+
+class TestAutoLinkGuard:
+    """防数据污染：前缀校验 / 低置信度 / 模糊匹配兜底。"""
+
+    def test_invoice_no_not_used_as_business(self, db):
+        """发票号（SDJZ/HNJZ 前缀）不得用于建档。"""
+        doc = _make_doc(db, name="发票.pdf", doc_type="发票")
+        _add_field(db, doc.id, "contract_no", "SDJZ-SXJG20260706")
+        assert svc.auto_link_document(db, doc.id) is None
+        assert _count(db, BusinessRecord) == 0
+        assert _count(db, BusinessFile) == 0
+
+    def test_low_confidence_skips(self, db):
+        """合同号置信度低于阈值 → 不自动归集，留人工确认。"""
+        doc = _make_doc(db, name="合同.pdf", doc_type="销售合同")
+        db.add(
+            DocumentField(
+                document_id=doc.id, field_name="contract_no",
+                field_value="SJWLXS（DD）-2026-YC0452", confidence=0.4, source="OCR",
+            )
+        )
+        db.flush()
+        assert svc.auto_link_document(db, doc.id) is None
+        assert _count(db, BusinessRecord) == 0
+
+    def test_fuzzy_match_pauses_for_manual(self, db):
+        """手写后四位识别错（YC0458 vs 档案 YC0453）→ 不归并、不建档，暂停待人工确认。"""
+        contract = _make_doc(db, name="合同.pdf", doc_type="销售合同")
+        _add_field(db, contract.id, "contract_no", "SJWLXS（DD）-2026-YC0453")
+        rec = svc.auto_link_document(db, contract.id)
+        assert rec is not None and rec.business_no == "SJWLXS（DD）-2026-YC0453"
+
+        doc2 = _make_doc(db, name="结算单.pdf", doc_type="结算单")
+        _add_field(db, doc2.id, "contract_no", "SJWLXS（DD）-2026-YC0458")
+        assert svc.auto_link_document(db, doc2.id) is None  # 暂停，不自动归并
+        assert _count(db, BusinessRecord) == 1  # 未新建错档案
+        assert _count(db, BusinessFile) == 1  # 未误归并
+
+    def test_fuzzy_ambiguous_skips(self, db):
+        """相似候选一律暂停（不归并、不新建），歧义与唯一候选都待人工确认。"""
+        c1 = _make_doc(db, name="a.pdf", doc_type="销售合同")
+        _add_field(db, c1.id, "contract_no", "SJWLXS（DD）-2026-YC0453")
+        c2 = _make_doc(db, name="b.pdf", doc_type="销售合同")
+        _add_field(db, c2.id, "contract_no", "SJWLXS（DD）-2026-YC0455")
+        assert svc.auto_link_document(db, c1.id) is not None  # 首个业务号正常建档
+        # YC0455 与 YC0453 高度相似 → 暂停，不合并也不新建
+        assert svc.auto_link_document(db, c2.id) is None
+        assert _count(db, BusinessRecord) == 1
+
+        doc3 = _make_doc(db, name="c.pdf", doc_type="结算单")
+        _add_field(db, doc3.id, "contract_no", "SJWLXS（DD）-2026-YC0458")
+        assert svc.auto_link_document(db, doc3.id) is None
+        assert _count(db, BusinessRecord) == 1  # 全程未新建错档案
+        assert _count(db, BusinessFile) == 1  # 全程未误归并
+
+
+class TestCompleteness:
+    def test_completeness_missing_roles(self):
+        comp = compute_completeness({"contract", "settlement"})
+        assert comp["complete"] is False
+        assert "invoice" in comp["missing_roles"]
+        assert "cargo_right" in comp["missing_roles"]
+        assert comp["percent"] == 50
+
+    def test_completeness_full(self):
+        comp = compute_completeness({"contract", "settlement", "invoice", "cargo_right"})
+        assert comp["complete"] is True
+        assert comp["missing_roles"] == []
+        assert comp["percent"] == 100
+
+    def test_completeness_empty(self):
+        comp = compute_completeness(set())
+        assert comp["complete"] is False
+        assert len(comp["missing_roles"]) == 4
+        assert comp["percent"] == 0

@@ -45,6 +45,8 @@ class BusinessRecordOut(BaseModel):
     updated_at: Optional[datetime] = None
     # 关联文件数量统计（列表端点必带）
     file_count: int = 0
+    # 档案完整性：{expected_roles, present_roles, missing_roles, percent, complete}
+    completeness: dict = Field(default_factory=dict)
     # 详情端点带出文件列表
     files: list[BusinessFileOut] = Field(default_factory=list)
 

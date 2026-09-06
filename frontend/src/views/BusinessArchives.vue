@@ -96,6 +96,21 @@ function sourceLabel(v: string): string {
   return sourceLabels[v] || v || '—'
 }
 
+interface Completeness {
+  expected_roles: string[]
+  expected_labels: string[]
+  present_roles: string[]
+  missing_roles: string[]
+  missing_labels: string[]
+  percent: number
+  complete: boolean
+}
+
+function comp(item: BusinessRecordOut | null): Completeness | null {
+  if (!item || !item.completeness) return null
+  return item.completeness as Completeness
+}
+
 function fmtAmount(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—'
   return Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -380,6 +395,10 @@ onMounted(loadList)
             <span class="ba-ship">🚢 {{ item.ship_name || '—' }}</span>
             <span class="ba-count">已归集 {{ item.file_count }} 份单据</span>
           </div>
+          <div v-if="comp(item)" class="ba-card-comp">
+            <el-tag v-if="comp(item)!.complete" size="small" type="success">单据齐全</el-tag>
+            <el-tag v-else size="small" type="warning">还缺：{{ comp(item)!.missing_labels.join('、') }}</el-tag>
+          </div>
         </div>
         <el-empty v-if="!loading && items.length === 0" description="暂无业务档案" :image-size="70" />
       </div>
@@ -404,6 +423,9 @@ onMounted(loadList)
             <h3>{{ current.business_no }}</h3>
             <el-tag :type="statusTagType(current.status)">{{ statusLabel(current.status) }}</el-tag>
             <el-tag type="info" size="small">已归集 {{ current.file_count }} 份单据</el-tag>
+            <el-tag v-if="comp(current)" :type="comp(current)!.complete ? 'success' : 'warning'" size="small">
+              {{ comp(current)!.complete ? '单据齐全' : '完整度 ' + comp(current)!.percent + '%' }}
+            </el-tag>
           </div>
           <div class="ba-detail-ops">
             <el-button size="small" type="primary" plain @click="openLinkDialog">关联已有文档</el-button>
@@ -433,6 +455,28 @@ onMounted(loadList)
           <el-descriptions-item label="签订日期">{{ current.sign_date || '—' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ fmtTime(current.created_at) }}</el-descriptions-item>
         </el-descriptions>
+
+        <!-- 单据完整性 -->
+        <div v-if="comp(current)" class="ba-comp-block">
+          <div class="ba-comp-head">
+            <span class="ba-comp-title">单据完整性</span>
+            <span class="ba-comp-percent">{{ comp(current)!.percent }}%</span>
+          </div>
+          <div class="ba-comp-roles">
+            <div
+              v-for="(label, i) in comp(current)!.expected_labels"
+              :key="i"
+              class="ba-comp-role"
+              :class="{ done: comp(current)!.present_roles.includes(comp(current)!.expected_roles[i]) }"
+            >
+              <el-icon class="ba-comp-icon">
+                <check v-if="comp(current)!.present_roles.includes(comp(current)!.expected_roles[i])" />
+                <close v-else />
+              </el-icon>
+              <span>{{ label }}</span>
+            </div>
+          </div>
+        </div>
 
         <!-- 单据清单 + 预览 -->
         <div class="ba-body" :class="{ 'ba-body-mobile': isMobile }">
@@ -696,6 +740,68 @@ onMounted(loadList)
 
 .ba-desc {
   margin-top: 12px;
+}
+
+/* 单据完整性 */
+.ba-comp-block {
+  margin-top: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fafbfc;
+  flex-shrink: 0;
+}
+
+.ba-comp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.ba-comp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.ba-comp-percent {
+  font-size: 13px;
+  font-weight: 600;
+  color: #409eff;
+}
+
+.ba-comp-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ba-comp-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background: #f56c6c1a;
+  color: #f56c6c;
+  border: 1px solid #f56c6c40;
+}
+
+.ba-comp-role.done {
+  background: #67c23a1a;
+  color: #67c23a;
+  border-color: #67c23a40;
+}
+
+.ba-comp-icon {
+  font-size: 12px;
+}
+
+/* 卡片完整度 */
+.ba-card-comp {
+  margin-top: 6px;
 }
 
 .ba-body {

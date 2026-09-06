@@ -785,6 +785,16 @@ export interface BusinessFileOut {
   file_type: string
 }
 
+export interface BusinessCompleteness {
+  expected_roles: string[]
+  expected_labels: string[]
+  present_roles: string[]
+  missing_roles: string[]
+  missing_labels: string[]
+  percent: number
+  complete: boolean
+}
+
 export interface BusinessRecordOut {
   id: number
   business_no: string
@@ -799,6 +809,7 @@ export interface BusinessRecordOut {
   created_at?: string
   updated_at?: string
   file_count: number
+  completeness?: BusinessCompleteness
   files: BusinessFileOut[]
 }
 

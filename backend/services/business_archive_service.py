@@ -23,8 +23,11 @@
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
+from difflib import SequenceMatcher
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -69,6 +72,92 @@ _DOCUMENT_TYPE_ROLE_MAP: dict[str, str] = {
     "货权凭证": FILE_ROLE_CARGO_RIGHT,
     "货权转移凭证": FILE_ROLE_CARGO_RIGHT,
 }
+
+# ---------------- 合同号合法性 / 模糊匹配 / 档案完整度 ----------------
+# 业务编号合法前缀（销售/采购 x 外矿/国内），发票号等非业务编号不得用于建档
+_BUSINESS_NO_PREFIXES: tuple[str, ...] = ("SJWLXS", "SJWLCG", "HSYCXS", "HSYCCG")
+# 合同号字段置信度低于该值不自动归集（手写/OCR 识别不清，留待人工确认）
+_CONFIDENCE_THRESHOLD = 0.6
+# 模糊匹配最低相似度（difflib），用于 OCR 手写后四位识别错时的候选兜底
+_FUZZY_THRESHOLD = 0.75
+# 前两名候选相似度差小于该值视为歧义，不自动归集
+_FUZZY_AMBIGUITY_GAP = 0.08
+
+# 业务档案期望单据角色（完整性检查）：合同 / 结算单 / 发票 / 货权
+_EXPECTED_ROLES: tuple[str, ...] = (
+    FILE_ROLE_CONTRACT,
+    FILE_ROLE_SETTLEMENT,
+    FILE_ROLE_INVOICE,
+    FILE_ROLE_CARGO_RIGHT,
+)
+_ROLE_LABELS: dict[str, str] = {
+    FILE_ROLE_CONTRACT: "合同",
+    FILE_ROLE_SETTLEMENT: "结算单",
+    FILE_ROLE_INVOICE: "发票",
+    FILE_ROLE_CARGO_RIGHT: "货权",
+    FILE_ROLE_OTHER: "其他",
+}
+
+
+def _normalize_no(no: str) -> str:
+    """业务编号归一化：全角转半角、去空白下划线、连字符统一，便于比较。"""
+    s = unicodedata.normalize("NFKC", (no or "").strip()).upper()
+    s = re.sub(r"[\s_]+", "", s)
+    return re.sub(r"-+", "-", s)
+
+
+def _is_valid_business_no(no: str) -> bool:
+    """校验是否为业务编号：必须匹配合法前缀且包含年份与数字编号。
+
+    防止发票号（如 SDJZ-SXJG20260706）等非业务编号被误当成合同号建档。
+    """
+    norm = _normalize_no(no)
+    if not norm:
+        return False
+    for prefix in _BUSINESS_NO_PREFIXES:
+        if norm.startswith(prefix):
+            rest = norm[len(prefix):]
+            if "202" in rest and any(ch.isdigit() for ch in rest):
+                return True
+    return False
+
+
+def _get_field_confidence(db: Session, document_id: int, field_name: str) -> float:
+    """读取字段最新一条的置信度，无记录视为 1.0（不阻塞）。"""
+    row = db.execute(
+        select(DocumentField.confidence)
+        .where(
+            DocumentField.document_id == document_id,
+            DocumentField.field_name == field_name,
+        )
+        .order_by(DocumentField.id.desc())
+        .limit(1)
+    ).first()
+    if row and row[0] is not None:
+        return float(row[0])
+    return 1.0
+
+
+def compute_completeness(present_roles: set[str]) -> dict:
+    """档案完整性：期望单据角色集合与实际已有角色的差集与完整度百分比。"""
+    present = set(present_roles or set())
+    missing = [r for r in _EXPECTED_ROLES if r not in present]
+    expected_count = len(_EXPECTED_ROLES)
+    percent = (
+        round((expected_count - len(missing)) / expected_count * 100)
+        if expected_count
+        else 0
+    )
+    return {
+        "expected_roles": list(_EXPECTED_ROLES),
+        "expected_labels": [_ROLE_LABELS.get(r, r) for r in _EXPECTED_ROLES],
+        "present_roles": sorted(present),
+        "missing_roles": missing,
+        "missing_labels": [_ROLE_LABELS.get(r, r) for r in missing],
+        "percent": percent,
+        "complete": len(missing) == 0,
+    }
+
 
 # ---------------- document_fields 字段名 → 档案列映射 ----------------
 # 真实字段名以数据库为准（vessel 船名 / amount 金额 / company 公司 / date 日期）
@@ -186,8 +275,51 @@ class BusinessArchiveService:
             )
             return None
 
+        # 1) 前缀合法性校验：发票号等非业务编号不得用于建档（防数据污染）
+        if not _is_valid_business_no(contract_no):
+            logger.info(
+                "自动归集跳过：文档 %s 的合同号 %r 不是合法业务编号（疑似发票号），不建档",
+                document_id, contract_no,
+            )
+            return None
+
+        # 2) 低置信度：手写/OCR 识别不清 → 不自动归集，留待人工确认
+        conf = _get_field_confidence(db, document_id, _BUSINESS_NO_FIELD)
+        if conf < _CONFIDENCE_THRESHOLD:
+            logger.info(
+                "自动归集跳过：文档 %s 合同号 %r 置信度 %.2f 过低，待人工确认归集",
+                document_id, contract_no, conf,
+            )
+            return None
+
+        # 3) 匹配档案：归一化精确 → 唯一高相似候选（模糊）→ 无匹配
+        norm = _normalize_no(contract_no)
+        business = None
+        match_mode = "none"
+        for rec in db.execute(select(BusinessRecord)).scalars():
+            if _normalize_no(rec.business_no) == norm:
+                business = rec
+                match_mode = "exact"
+                break
+        if business is None:
+            fstate, candidate = self._find_fuzzy_business(db, contract_no)
+            if fstate == "candidate":
+                logger.info(
+                    "自动归集暂停：文档 %s 合同号 %r 与既有档案 %r 高度相似，"
+                    "待人工确认归集（避免误合并或误建档）",
+                    document_id, contract_no, candidate.business_no,
+                )
+                return None
+            if fstate == "ambiguous":
+                logger.info(
+                    "自动归集暂停：文档 %s 合同号 %r 与多个既有档案相似度过近，"
+                    "待人工确认归集",
+                    document_id, contract_no,
+                )
+                return None
+            # fstate == "none"：无候选，走正常新建
+
         # 幂等：已有关联直接返回
-        business = self.get_business_by_no(db, contract_no)
         if business is not None and self.get_link(db, business.id, document_id) is not None:
             logger.info(
                 "自动归集幂等跳过：文档 %s 已关联档案 %s", document_id, business.business_no
@@ -198,6 +330,7 @@ class BusinessArchiveService:
             # 档案不存在 → 新建（active）
             if business is None:
                 business = self._create_record_from_fields(db, document_id, contract_no)
+                match_mode = "new"
 
             # 建立关联
             link = BusinessFile(
@@ -217,7 +350,10 @@ class BusinessArchiveService:
                 new_path=business.business_no,
                 document_id=document_id,
                 result=RESULT_OK,
-                error_message=f"file_role={link.file_role}, business_id={business.id}",
+                error_message=(
+                    f"match={match_mode}, confidence={conf:.2f}, "
+                    f"file_role={link.file_role}, business_id={business.id}"
+                ),
             )
             logger.info(
                 "自动归集完成：文档 %s（%s）→ 档案 %s（role=%s）",
@@ -243,6 +379,41 @@ class BusinessArchiveService:
                 error_message=str(exc)[:500],
             )
             return None
+
+    def _find_fuzzy_business(
+        self, db: Session, contract_no: str
+    ) -> tuple[str, Optional[BusinessRecord]]:
+        """归一化精确匹配未命中时，检测是否存在高度相似的既有档案。
+
+        手写合同号后四位 OCR 识别错（如 YC0453 → YC0458）时精确匹配会失败；
+        此时若存在高相似档案，系统无法区分"识别错误"与"真实新业务号"
+        （两个独立业务号本就可能只差一位），因此一律不自动处理，交由人工确认。
+
+        返回 (state, record)：
+          ("none", None)       无相似候选 → 可安全新建档案
+          ("candidate", rec)  唯一高相似候选 → 暂停自动归集，待人工确认
+          ("ambiguous", None) 多个候选过近 → 暂停自动归集，待人工确认
+        """
+        norm = _normalize_no(contract_no)
+        scored: list[tuple[float, BusinessRecord]] = []
+        for rec in db.execute(select(BusinessRecord)).scalars():
+            ratio = SequenceMatcher(None, norm, _normalize_no(rec.business_no)).ratio()
+            if ratio >= _FUZZY_THRESHOLD:
+                scored.append((ratio, rec))
+        if not scored:
+            return ("none", None)
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if len(scored) >= 2 and scored[0][0] - scored[1][0] < _FUZZY_AMBIGUITY_GAP:
+            logger.info(
+                "模糊匹配歧义（前两名相似度过近），暂停自动归集待人工确认: %r -> %s",
+                contract_no, [(f"{r[1].business_no}:{r[0]:.2f}") for r in scored[:3]],
+            )
+            return ("ambiguous", None)
+        logger.info(
+            "模糊匹配候选，暂停自动归集待人工确认: %r -> %s (%.2f)",
+            contract_no, scored[0][1].business_no, scored[0][0],
+        )
+        return ("candidate", scored[0][1])
 
     def _create_record_from_fields(
         self, db: Session, document_id: int, contract_no: str

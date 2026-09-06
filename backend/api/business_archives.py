@@ -35,6 +35,7 @@ from backend.services.business_archive_service import (
     BusinessArchiveError,
     BusinessArchiveService,
     _resolve_file_role,
+    compute_completeness,
 )
 from backend.utils.logger import get_logger
 
@@ -48,7 +49,10 @@ _service = BusinessArchiveService()
 # ---------------- 工具函数 ----------------
 
 
-def _to_record_out(record: BusinessRecord, file_count: int = 0) -> BusinessRecordOut:
+def _to_record_out(
+    record: BusinessRecord, file_count: int = 0, roles_csv: str = ""
+) -> BusinessRecordOut:
+    roles = {r for r in (roles_csv or "").split(",") if r}
     return BusinessRecordOut(
         id=record.id,
         business_no=record.business_no,
@@ -63,6 +67,7 @@ def _to_record_out(record: BusinessRecord, file_count: int = 0) -> BusinessRecor
         created_at=record.created_at,
         updated_at=record.updated_at,
         file_count=file_count,
+        completeness=compute_completeness(roles),
     )
 
 
@@ -128,7 +133,16 @@ def list_business_archives(
         .correlate(BusinessRecord)
         .scalar_subquery()
     )
-    query = db.query(BusinessRecord, file_count_sq.label("file_count"))
+    roles_sq = (
+        select(func.group_concat(BusinessFile.file_role, ","))
+        .select_from(BusinessFile)
+        .where(BusinessFile.business_id == BusinessRecord.id)
+        .correlate(BusinessRecord)
+        .scalar_subquery()
+    )
+    query = db.query(
+        BusinessRecord, file_count_sq.label("file_count"), roles_sq.label("roles_csv")
+    )
 
     if status:
         query = query.filter(BusinessRecord.status == status)
@@ -149,7 +163,10 @@ def list_business_archives(
     rows = (
         query.order_by(BusinessRecord.id.desc()).offset(skip).limit(limit).all()
     )
-    items = [_to_record_out(record, file_count) for record, file_count in rows]
+    items = [
+        _to_record_out(record, file_count, roles_csv or "")
+        for record, file_count, roles_csv in rows
+    ]
     logger.info("查询业务档案列表: total=%d returned=%d", total, len(items))
     return BusinessRecordListResponse(total=total, items=items)
 
@@ -158,7 +175,13 @@ def list_business_archives(
 def get_business_archive(business_id: int, db: Session = Depends(get_db)):
     """档案详情：基本信息 + 名下全部关联文件。"""
     record = _get_or_404(db, business_id)
+    roles = set(
+        db.execute(
+            select(BusinessFile.file_role).where(BusinessFile.business_id == business_id)
+        ).scalars()
+    )
     out = _to_record_out(record, file_count=_file_count(db, business_id))
+    out.completeness = compute_completeness(roles)
     out.files = _load_file_outs(db, business_id)
     return BusinessRecordDetailResponse(data=out)
 
