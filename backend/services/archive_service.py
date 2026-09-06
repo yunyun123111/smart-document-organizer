@@ -118,9 +118,26 @@ class ArchiveService:
 
         # 2. 判重 → 移动 → 落库：临界区，防止并发归档同一内容的文件
         with self._archive_lock:
-            return self._archive_locked(
+            result = self._archive_locked(
                 src, file_hash, category_path, filename, date_str, document_id, job_id
             )
+
+        # 3. 归档成功后自动归集业务档案（V2.0）：
+        #    同一合同号/结算单对应的新文档，自动挂到已有档案（无档案则新建）
+        if result.success and result.document_id is not None:
+            self._auto_link_after_archive(result.document_id)
+
+        return result
+
+    def _auto_link_after_archive(self, document_id: int) -> None:
+        """归档成功后按合同号自动归集业务档案；失败仅记日志，绝不影响归档结果。"""
+        try:
+            from backend.services.business_archive_service import BusinessArchiveService
+
+            svc = BusinessArchiveService()
+            svc.auto_link_document(self.db, document_id)
+        except Exception as exc:  # noqa: BLE001 - 归集是附加动作，不允许破坏归档
+            logger.warning("归档后自动归集业务档案失败 doc#%s: %s", document_id, exc)
 
     def _archive_locked(
         self,

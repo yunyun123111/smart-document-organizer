@@ -216,3 +216,91 @@ class TestBackfill:
         assert stats["already_linked"] == 1
         assert stats["linked"] == 0
         assert stats["created_records"] == 0
+
+
+class TestArchiveAutoLink:
+    """归档成功（自动整理 / 人工审核确认统一入口）后自动归集业务档案。"""
+
+    def test_archive_creates_business_and_links(self, db, tmp_path):
+        from backend.services.archive_service import ArchiveService
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        src = inbox / "结算单.pdf"
+        src.write_text("结算单内容 合同号 SJWLXS（DD）-2026-YC0429", encoding="utf-8")
+
+        doc = _make_doc(db, name="结算单.pdf", doc_type="结算单")
+        _add_field(db, doc.id, "contract_no", "SJWLXS（DD）-2026-YC0429")
+        db.commit()
+
+        svc_archive = ArchiveService(db, document_root=tmp_path / "docroot")
+        result = svc_archive.archive(
+            src, "财务/结算单", "2026-08_结算单.pdf",
+            date_str="2026-08-01", document_id=doc.id,
+        )
+        assert result.success
+
+        rec = db.execute(select(BusinessRecord)).scalar_one()
+        assert rec.business_no == "SJWLXS（DD）-2026-YC0429"
+        link = db.execute(select(BusinessFile)).scalar_one()
+        assert link.document_id == doc.id
+        assert link.file_role == FILE_ROLE_SETTLEMENT
+        assert link.link_source == "auto_rule"
+
+    def test_archive_new_doc_joins_existing_business(self, db, tmp_path):
+        """先归档合同建档案，再归档同合同号结算单 → 归入同一档案。"""
+        from backend.services.archive_service import ArchiveService
+
+        # 1. 合同归档 → 自动新建档案
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        src1 = inbox / "合同.pdf"
+        src1.write_text("合同内容 销售合同", encoding="utf-8")
+        contract = _make_doc(db, name="合同.pdf", doc_type="销售合同")
+        _add_field(db, contract.id, "contract_no", "SJWLXS（DD）-2026-YC0429")
+        db.commit()
+        svc_archive = ArchiveService(db, document_root=tmp_path / "docroot")
+        r1 = svc_archive.archive(
+            src1, "合同/销售合同", "合同.pdf", date_str="2026-08-01", document_id=contract.id
+        )
+        assert r1.success
+        rec = db.execute(select(BusinessRecord)).scalar_one()
+        first_id = rec.id
+
+        # 2. 结算单归档 → 自动归入同一档案（不新建）
+        src2 = inbox / "结算单.pdf"
+        src2.write_text("结算单内容", encoding="utf-8")
+        settlement = _make_doc(db, name="结算单.pdf", doc_type="结算单")
+        _add_field(db, settlement.id, "contract_no", "SJWLXS（DD）-2026-YC0429")
+        db.commit()
+        r2 = svc_archive.archive(
+            src2, "财务/结算单", "结算单.pdf", date_str="2026-08-02", document_id=settlement.id
+        )
+        assert r2.success
+
+        recs = db.execute(select(BusinessRecord)).scalars().all()
+        assert len(recs) == 1
+        assert recs[0].id == first_id
+        links = db.execute(select(BusinessFile)).scalars().all()
+        assert len(links) == 2
+        roles = {l.document_id: l.file_role for l in links}
+        assert roles[contract.id] == FILE_ROLE_CONTRACT
+        assert roles[settlement.id] == FILE_ROLE_SETTLEMENT
+
+    def test_archive_without_contract_skips(self, db, tmp_path):
+        from backend.services.archive_service import ArchiveService
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir(parents=True, exist_ok=True)
+        src = inbox / "无合同号.pdf"
+        src.write_text("无合同号内容", encoding="utf-8")
+        doc = _make_doc(db, name="无合同号.pdf", doc_type="发票")
+        db.commit()
+
+        svc_archive = ArchiveService(db, document_root=tmp_path / "docroot")
+        result = svc_archive.archive(
+            src, "财务/发票", "发票.pdf", date_str="2026-08-01", document_id=doc.id
+        )
+        assert result.success
+        assert _count(db, BusinessRecord) == 0
+        assert _count(db, BusinessFile) == 0
