@@ -269,7 +269,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 迁移列表：[(version, name, upgrade_fn)]
 # upgrade_fn(db: Session) -> None，须幂等。
@@ -299,9 +299,71 @@ def _migrate_create_excel_sources(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_business_archive(db: Session) -> None:
+    """V2.0-01: 新增 business_records / business_files 表（业务档案模块）。幂等。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS business_records ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "business_no VARCHAR(255) NOT NULL, "
+        "title VARCHAR(512) NOT NULL DEFAULT '', "
+        "business_type VARCHAR(100) NOT NULL DEFAULT '', "
+        "status VARCHAR(20) NOT NULL DEFAULT 'active', "
+        "ship_name VARCHAR(255) NOT NULL DEFAULT '', "
+        "counterparty VARCHAR(255) NOT NULL DEFAULT '', "
+        "total_amount NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "sign_date DATE, "
+        "extra_data TEXT NOT NULL DEFAULT '{}', "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_business_records_business_no "
+        "ON business_records (business_no)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_business_records_status "
+        "ON business_records (status)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_business_records_ship_name "
+        "ON business_records (ship_name)"
+    ))
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS business_files ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "business_id INTEGER NOT NULL, "
+        "document_id INTEGER NOT NULL, "
+        "file_role VARCHAR(20) NOT NULL DEFAULT 'other', "
+        "is_primary BOOLEAN NOT NULL DEFAULT 0, "
+        "link_source VARCHAR(20) NOT NULL DEFAULT 'manual', "
+        "sort_order INTEGER NOT NULL DEFAULT 0, "
+        "created_at DATETIME NOT NULL, "
+        "FOREIGN KEY (business_id) REFERENCES business_records (id) ON DELETE CASCADE, "
+        "FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE)"
+    ))
+    db.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_business_files_business_document "
+        "ON business_files (business_id, document_id)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_business_files_document_id "
+        "ON business_files (document_id)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_business_files_business_id "
+        "ON business_files (business_id)"
+    ))
+    # 记录迁移版本（自包含：确保记录表存在；INSERT OR REPLACE 幂等，
+    # run_migrations 随后也会统一记录，双写无害）
+    _ensure_schema_migrations(db)
+    _record_migration(db, 4, "create business_archive")
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
     (3, "create excel_sources", _migrate_create_excel_sources),
+    (4, "create business_archive", _migrate_create_business_archive),
 ]
 
 

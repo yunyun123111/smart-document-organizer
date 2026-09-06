@@ -53,6 +53,24 @@ from backend.models.processing_job import (
 from backend.models.rename_template import RenameTemplate
 from backend.models.recognition_template import RecognitionTemplate
 from backend.models.document_sample import DocumentSample
+from backend.models.business_archive import (
+    ALL_BUSINESS_STATUSES,
+    ALL_FILE_ROLES,
+    ALL_LINK_SOURCES,
+    BUSINESS_STATUS_ACTIVE,
+    BUSINESS_STATUS_ARCHIVED,
+    BUSINESS_STATUS_COMPLETED,
+    BusinessFile,
+    BusinessRecord,
+    FILE_ROLE_CARGO_RIGHT,
+    FILE_ROLE_CONTRACT,
+    FILE_ROLE_INVOICE,
+    FILE_ROLE_OTHER,
+    FILE_ROLE_SETTLEMENT,
+    LINK_SOURCE_AUTO_RULE,
+    LINK_SOURCE_EXCEL_LEDGER,
+    LINK_SOURCE_MANUAL,
+)
 from backend.models.recycle_bin import RecycleBinItem
 from backend.models.excel_source import ExcelSource, ExcelSheetConfig
 from backend.models.rule import ALL_MATCH_TYPES, MATCH_CONTAINS, MATCH_EXACT, MATCH_REGEX, Rule
@@ -71,6 +89,22 @@ __all__ = [
     "RecycleBinItem",
     "ExcelSource",
     "ExcelSheetConfig",
+    "BusinessRecord",
+    "BusinessFile",
+    "ALL_BUSINESS_STATUSES",
+    "BUSINESS_STATUS_ACTIVE",
+    "BUSINESS_STATUS_COMPLETED",
+    "BUSINESS_STATUS_ARCHIVED",
+    "ALL_FILE_ROLES",
+    "FILE_ROLE_CONTRACT",
+    "FILE_ROLE_SETTLEMENT",
+    "FILE_ROLE_INVOICE",
+    "FILE_ROLE_CARGO_RIGHT",
+    "FILE_ROLE_OTHER",
+    "ALL_LINK_SOURCES",
+    "LINK_SOURCE_AUTO_RULE",
+    "LINK_SOURCE_EXCEL_LEDGER",
+    "LINK_SOURCE_MANUAL",
     "ProcessingJob",
     "OperationLog",
     # 状态 / 来源 / 操作类型 / 匹配类型

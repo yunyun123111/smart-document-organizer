@@ -86,7 +86,7 @@ class TestFutureMigration:
         return _upgrade
 
     def test_new_migration_applied_on_legacy(self, tmp_path, monkeypatch):
-        """老库升级：新增更高版本迁移（模拟 v3 发布）会被执行，且只执行一次。"""
+        """老库升级：新增更高版本迁移（模拟 v5 发布）会被执行，且只执行一次。"""
         eng, Session = _make_session(tmp_path)
         # 模拟老库：业务表 + legacy baseline（当前最新版本之前的库）
         with Session() as db:
@@ -94,37 +94,37 @@ class TestFutureMigration:
             db.commit()
             database.run_migrations(db)  # 打 legacy baseline + 应用当前已有迁移
 
-        # 模拟发布新版本：SCHEMA_VERSION=4，新增 v4 迁移
-        monkeypatch.setattr(database, "SCHEMA_VERSION", 4)
+        # 模拟发布新版本：SCHEMA_VERSION=5，新增 v5 迁移
+        monkeypatch.setattr(database, "SCHEMA_VERSION", 5)
         monkeypatch.setattr(
             database, "MIGRATIONS",
-            [(4, "add demo col", self._add_col_fn("demo_col"))],
+            [(5, "add demo col", self._add_col_fn("demo_col"))],
         )
         with Session() as db:
             database.run_migrations(db)
-            assert (4, "add demo col") in _migration_names(db)
+            assert (5, "add demo col") in _migration_names(db)
             cols = {r[1] for r in db.execute(text("PRAGMA table_info(documents)")).fetchall()}
             assert "demo_col" in cols
 
         # 再次运行 → 幂等，不重复插入迁移记录
         with Session() as db:
             database.run_migrations(db)
-            assert _migration_names(db).count((4, "add demo col")) == 1
+            assert _migration_names(db).count((5, "add demo col")) == 1
         eng.dispose()
 
     def test_new_migration_skipped_on_fresh(self, tmp_path, monkeypatch):
         """新库：create_all 已是最新结构，迁移直接标记已应用、不执行。"""
-        monkeypatch.setattr(database, "SCHEMA_VERSION", 4)
+        monkeypatch.setattr(database, "SCHEMA_VERSION", 5)
         monkeypatch.setattr(
             database, "MIGRATIONS",
-            [(4, "add demo col", self._add_col_fn("demo_col"))],
+            [(5, "add demo col", self._add_col_fn("demo_col"))],
         )
         eng, Session = _make_session(tmp_path)
         with Session() as db:
             database.run_migrations(db)
-            # 新库 fresh baseline=SCHEMA_VERSION=3 → v3 被逻辑标记为已应用，不执行
+            # 新库 fresh baseline=SCHEMA_VERSION=5 → v5 被逻辑标记为已应用，不执行
             assert (0, "fresh baseline") in _migration_names(db)
-            assert (3, "add demo col") not in _migration_names(db)
+            assert (5, "add demo col") not in _migration_names(db)
             # 未执行迁移函数：documents 业务表不存在（应由 create_all 负责建最新结构）
             assert "documents" not in _table_names(db)
         eng.dispose()
