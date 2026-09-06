@@ -768,3 +768,113 @@ export function deleteExcelSource(id: number): Promise<{ ok: boolean }> {
 export function testExcelMatch(id: number, fields: Record<string, string>): Promise<{ match: any }> {
   return http.post(`/excel-sources/${id}/test-match`, { fields })
 }
+
+
+// ---------- 业务档案（V2.0） ----------
+export interface BusinessFileOut {
+  id: number
+  business_id: number
+  document_id: number
+  file_role: string
+  is_primary: boolean
+  link_source: string
+  sort_order: number
+  created_at?: string
+  document_filename: string
+  document_type: string
+  file_type: string
+}
+
+export interface BusinessRecordOut {
+  id: number
+  business_no: string
+  title: string
+  business_type: string
+  status: string
+  ship_name: string
+  counterparty: string
+  total_amount: number
+  sign_date?: string | null
+  extra_data: string
+  created_at?: string
+  updated_at?: string
+  file_count: number
+  files: BusinessFileOut[]
+}
+
+export interface BusinessArchiveListResp {
+  ok: boolean
+  total: number
+  items: BusinessRecordOut[]
+}
+
+export interface BusinessArchiveDetailResp {
+  ok: boolean
+  data: BusinessRecordOut
+}
+
+export interface BusinessArchiveCreate {
+  business_no: string
+  title?: string
+  business_type?: string
+  status?: string
+  ship_name?: string
+  counterparty?: string
+  total_amount?: number
+  sign_date?: string
+  extra_data?: string
+}
+
+export interface BusinessArchiveUpdate {
+  title?: string
+  business_type?: string
+  status?: string
+  ship_name?: string
+  counterparty?: string
+  total_amount?: number
+  sign_date?: string
+  extra_data?: string
+}
+
+export interface BackfillResp {
+  ok: boolean
+  stats: Record<string, number>
+}
+
+export function listBusinessArchives(params: {
+  status?: string
+  business_type?: string
+  keyword?: string
+  skip?: number
+  limit?: number
+}): Promise<BusinessArchiveListResp> {
+  return http.get('/business-archives', { params })
+}
+
+export function getBusinessArchive(id: number): Promise<BusinessArchiveDetailResp> {
+  return http.get(`/business-archives/${id}`)
+}
+
+export function createBusinessArchive(payload: BusinessArchiveCreate): Promise<BusinessArchiveDetailResp> {
+  return http.post('/business-archives', payload)
+}
+
+export function updateBusinessArchive(
+  id: number, payload: BusinessArchiveUpdate,
+): Promise<BusinessArchiveDetailResp> {
+  return http.put(`/business-archives/${id}`, payload)
+}
+
+export function addBusinessFile(
+  id: number, documentId: number, fileRole?: string,
+): Promise<BusinessArchiveDetailResp> {
+  return http.post(`/business-archives/${id}/files`, { document_id: documentId, file_role: fileRole })
+}
+
+export function removeBusinessFile(id: number, documentId: number): Promise<{ ok: boolean }> {
+  return http.delete(`/business-archives/${id}/files/${documentId}`)
+}
+
+export function backfillBusinessArchives(): Promise<BackfillResp> {
+  return http.post('/business-archives/backfill')
+}

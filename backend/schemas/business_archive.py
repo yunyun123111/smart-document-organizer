@@ -23,6 +23,7 @@ class BusinessFileOut(BaseModel):
     # 冗余字段由 API 层 join documents 填充
     document_filename: str = ""
     document_type: str = ""
+    file_type: str = ""
 
 
 class BusinessRecordOut(BaseModel):

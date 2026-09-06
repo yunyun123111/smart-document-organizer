@@ -73,16 +73,18 @@ def _load_file_outs(db: Session, business_id: int) -> list[BusinessFileOut]:
             BusinessFile,
             Document.original_filename,
             Document.document_type,
+            Document.file_type,
         )
         .join(Document, Document.id == BusinessFile.document_id)
         .where(BusinessFile.business_id == business_id)
         .order_by(BusinessFile.sort_order, BusinessFile.id)
     ).all()
     outs: list[BusinessFileOut] = []
-    for bf, filename, doc_type in rows:
+    for bf, filename, doc_type, file_type in rows:
         out = BusinessFileOut.model_validate(bf)
         out.document_filename = filename or ""
         out.document_type = doc_type or ""
+        out.file_type = file_type or ""
         outs.append(out)
     return outs
 
