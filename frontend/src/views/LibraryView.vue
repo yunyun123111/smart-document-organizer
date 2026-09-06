@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
-import { useSplitDrag } from '@/composables/useSplitDrag'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   batchDeleteDocuments,
@@ -75,6 +74,16 @@ async function load() {
       date_end: dateRange.value ? dateRange.value[1] : undefined,
       limit: 200,
     })
+    // 列表刷新后同步当前选中文档
+    if (selectedDoc.value) {
+      const hit = items.value.find((x) => x.id === selectedDoc.value!.id)
+      if (hit) {
+        selectedDoc.value = hit
+      } else {
+        selectedDoc.value = null
+        editDetail.value = null
+      }
+    }
   } finally {
     loading.value = false
   }
@@ -84,10 +93,6 @@ async function loadFilters() {
   const [t, c] = await Promise.all([listDocumentTypes(), listDocumentCategories()])
   docTypes.value = t
   categories.value = c
-}
-
-function onSelectionChange(rows: DocumentListItem[]) {
-  selectedIds.value = rows.map((r) => r.id)
 }
 
 function toggleSelect(id: number, checked: boolean) {
@@ -149,6 +154,10 @@ async function remove(row: DocumentListItem) {
   }
   await deleteDocument(row.id)
   ElMessage.success('已移入回收站')
+  if (selectedDoc.value?.id === row.id) {
+    selectedDoc.value = null
+    editDetail.value = null
+  }
   load()
 }
 
@@ -186,32 +195,27 @@ async function openFile(id: number) {
   }
 }
 
-// ---- 页面内嵌分屏：左原件预览 + 右信息核对与修改（与业务档案风格统一） ----
-const panelOpen = ref(false)
-const previewDoc = ref<{ id: number; name: string; ext: string } | null>(null)
+// ---------------- 全景详情：从左侧选择文档 → 右侧查看（与业务档案一致） ----------------
+const selectedDoc = ref<DocumentListItem | null>(null)
 const editDetail = ref<DocumentDetail | null>(null)
 const editFilename = ref('')
 const editDocType = ref('')
 const editCategory = ref('')
 const editFields = ref<Record<string, string>>({})
 const editSaving = ref(false)
-// 分屏可拖拽调整左右宽度
-const { leftRatio, startDrag } = useSplitDrag()
 
-async function preview(row: DocumentListItem) {
-  const ext = (row.current_filename || row.original_filename || '').toLowerCase().split('.').pop() || ''
-  previewDoc.value = {
-    id: row.id,
-    name: row.current_filename || row.original_filename,
-    ext,
-  }
-  panelOpen.value = true
+const previewExt = computed(() => {
+  const name = selectedDoc.value?.current_filename || selectedDoc.value?.original_filename || ''
+  return name.toLowerCase().split('.').pop() || ''
+})
+
+async function selectDoc(row: DocumentListItem) {
+  selectedDoc.value = row
   await loadEdit(row.id)
 }
 
-function closePanel() {
-  panelOpen.value = false
-  previewDoc.value = null
+function closeDetail() {
+  selectedDoc.value = null
   editDetail.value = null
 }
 
@@ -230,17 +234,17 @@ async function loadEdit(id: number) {
 }
 
 async function saveEdit() {
-  if (!previewDoc.value || !editDetail.value) return
+  if (!selectedDoc.value || !editDetail.value) return
   editSaving.value = true
   try {
-    await updateDocument(previewDoc.value.id, {
+    await updateDocument(selectedDoc.value.id, {
       document_type: editDocType.value || undefined,
       fields: { ...editFields.value, suggested_category: editCategory.value },
       filename: editFilename.value.trim() || undefined,
     })
     ElMessage.success('已保存')
-    closePanel()
     await load()
+    await selectDoc(selectedDoc.value)
   } catch (e: any) {
     if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
   } finally {
@@ -287,13 +291,14 @@ onMounted(async () => {
 
 <template>
   <div class="lib-page">
-    <!-- ============ 左：筛选面板 ============ -->
+    <!-- ============ 左：搜索筛选 + 文档列表 ============ -->
     <aside class="lib-side">
       <div class="lib-side-title">
         <span>文档库</span>
         <el-tag size="small" type="info">{{ items.length }} 份</el-tag>
       </div>
 
+      <!-- 搜索筛选板块 -->
       <el-autocomplete
         v-model="keyword"
         :fetch-suggestions="querySearch"
@@ -366,6 +371,7 @@ onMounted(async () => {
 
       <div class="lib-side-divider" />
 
+      <!-- 批量操作 -->
       <div class="lib-batch">
         <div class="lib-filter-label">批量操作</div>
         <el-button
@@ -387,129 +393,87 @@ onMounted(async () => {
         <div v-if="selectedIds.length" class="lib-selected-tip">已选 {{ selectedIds.length }} 项</div>
       </div>
 
+      <div class="lib-side-divider" />
+
+      <!-- 文档列表（点击选中 → 右侧全景详情） -->
+      <div class="lib-list-label">文档列表</div>
+      <div v-loading="loading" class="lib-list">
+        <div
+          v-for="row in items"
+          :key="row.id"
+          class="lib-doc-card"
+          :class="{ active: selectedDoc?.id === row.id }"
+          @click="selectDoc(row)"
+        >
+          <div class="lib-doc-head">
+            <el-checkbox
+              :model-value="selectedIds.includes(row.id)"
+              @click.stop
+              @change="(v: any) => toggleSelect(row.id, !!v)"
+            />
+            <span class="lib-doc-name" :title="row.current_filename">{{ row.current_filename }}</span>
+          </div>
+          <div class="lib-doc-meta">
+            <el-tag v-if="row.document_type" size="small" type="primary">{{ row.document_type }}</el-tag>
+            <el-tag v-else size="small" type="info">未识别</el-tag>
+            <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+            <span v-if="row.confidence !== null" class="gray small">{{ (row.confidence * 100).toFixed(0) }}%</span>
+            <span class="gray small">{{ fmtSize(row.file_size) }}</span>
+          </div>
+          <div class="lib-doc-foot">
+            <span class="gray small">{{ row.created_at }}</span>
+            <el-button link type="danger" size="small" @click.stop="remove(row)">删除</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!loading && items.length === 0" description="暂无文档" :image-size="60" />
+      </div>
+
       <div class="lib-side-foot">
         <el-button size="small" text type="primary" @click="clearAllFilters">重置全部筛选</el-button>
       </div>
     </aside>
 
-    <!-- ============ 右：文档列表 + 内嵌预览分屏 ============ -->
+    <!-- ============ 右：全景详情（预览 + 信息核对与修改） ============ -->
     <main class="lib-main">
-      <template v-if="!panelOpen">
-        <!-- 手机端：卡片列表 -->
-        <div v-if="isMobile" v-loading="loading" class="mobile-list">
-          <div v-for="row in items" :key="row.id" class="doc-card">
-            <div class="doc-card-head">
-              <el-checkbox
-                :model-value="selectedIds.includes(row.id)"
-                @change="(v: any) => toggleSelect(row.id, !!v)"
-              />
-              <span class="doc-name" @click="preview(row)">{{ row.current_filename }}</span>
-            </div>
-            <div class="doc-meta">
-              <el-tag v-if="row.document_type" size="small" type="primary">{{ row.document_type }}</el-tag>
-              <el-tag v-else size="small" type="info">未识别</el-tag>
-              <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-              <span v-if="row.status === 'duplicate' && row.duplicate_of" class="gray small">重复自:{{ row.duplicate_of }}</span>
-              <span v-if="row.confidence !== null" class="gray small">{{ (row.confidence * 100).toFixed(0) }}%</span>
-              <span class="gray small">{{ fmtSize(row.file_size) }}</span>
-            </div>
-            <div class="doc-time gray small">{{ row.created_at }}</div>
-            <div class="doc-actions">
-              <el-button size="small" type="primary" @click="preview(row)">预览/编辑</el-button>
-              <el-button v-if="row.status === 'archived'" size="small" type="success" @click="openFile(row.id)">打开</el-button>
-              <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
-            </div>
+      <template v-if="selectedDoc && editDetail">
+        <div class="lib-detail-head">
+          <div class="lib-detail-title">
+            <h3 :title="selectedDoc.current_filename">{{ selectedDoc.current_filename }}</h3>
+            <el-tag v-if="editDetail.document_type" size="small" type="primary">{{ editDetail.document_type }}</el-tag>
+            <el-tag :type="statusTag(editDetail.status)" size="small">{{ statusLabel(editDetail.status) }}</el-tag>
           </div>
-          <el-empty v-if="!loading && items.length === 0" description="暂无文件" />
-        </div>
-
-        <!-- 桌面端：表格 -->
-        <div v-else v-loading="loading" class="lib-table-wrap">
-          <el-table :data="items" style="width: 100%" @selection-change="onSelectionChange">
-            <el-table-column type="selection" width="45" />
-            <el-table-column prop="current_filename" label="当前文件名" min-width="220" show-overflow-tooltip />
-            <el-table-column prop="document_type" label="类型" width="110">
-              <template #default="{ row }">
-                <el-tag v-if="row.document_type" size="small">{{ row.document_type }}</el-tag>
-                <el-tag v-else type="info" size="small">未识别</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="状态" width="90">
-              <template #default="{ row }">
-                <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="重复来源" width="170" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span v-if="row.status === 'duplicate' && row.duplicate_of" class="gray small">{{ row.duplicate_of }}</span>
-                <span v-else class="gray small">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="置信度" width="85">
-              <template #default="{ row }">
-                <span v-if="row.confidence !== null">{{ (row.confidence * 100).toFixed(0) }}%</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="file_size" label="大小" width="80">
-              <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="时间" width="160" />
-            <el-table-column label="操作" width="190" fixed="right">
-              <template #default="{ row }">
-                <el-button link type="primary" @click="preview(row)">预览/编辑</el-button>
-                <el-button v-if="row.status === 'archived'" link type="success" @click="openFile(row.id)">
-                  打开
-                </el-button>
-                <el-button link type="danger" @click="remove(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </template>
-
-      <!-- 内嵌分屏：左预览 + 右信息核对与修改 -->
-      <div v-else v-loading="editSaving" class="lib-split">
-        <div class="lib-split-bar">
-          <span class="lib-split-name">{{ previewDoc?.name }}</span>
-          <div class="lib-split-ops">
-            <el-button size="small" @click="closePanel">收起</el-button>
+          <div class="lib-detail-ops">
+            <el-button v-if="editDetail.status === 'archived'" size="small" type="success" plain @click="openFile(editDetail.id)">打开原件</el-button>
+            <el-button size="small" type="primary" :loading="editSaving" @click="saveEdit">保存修改</el-button>
+            <el-button size="small" @click="closeDetail">关闭</el-button>
           </div>
         </div>
-        <div class="lib-split-body">
-          <div class="lib-split-left" :style="{ flexBasis: leftRatio + '%' }">
-            <DocumentPreview
-              v-if="previewDoc"
-              :doc-id="previewDoc.id"
-              :name="previewDoc.name"
-              :file-type="previewDoc.ext"
-            />
-          </div>
-          <div class="splitter" @mousedown="startDrag" />
-          <div class="lib-split-right">
-            <template v-if="editDetail">
-              <el-descriptions :column="1" border size="small" class="mb16">
-                <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
-                <el-descriptions-item label="大小">{{ fmtSize(editDetail.file_size) }}</el-descriptions-item>
-                <el-descriptions-item label="状态">
-                  <el-tag :type="statusTag(editDetail.status)" size="small">
-                    {{ statusLabel(editDetail.status) }}
-                  </el-tag>
-                </el-descriptions-item>
-                <el-descriptions-item label="归档路径">{{ editDetail.current_path }}</el-descriptions-item>
-                <el-descriptions-item label="SHA256">{{ editDetail.file_hash }}</el-descriptions-item>
-              </el-descriptions>
 
+        <el-descriptions :column="isMobile ? 1 : 4" border size="small" class="lib-desc">
+          <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
+          <el-descriptions-item label="大小">{{ fmtSize(editDetail.file_size) }}</el-descriptions-item>
+          <el-descriptions-item label="归档路径">{{ editDetail.current_path }}</el-descriptions-item>
+          <el-descriptions-item label="SHA256">{{ editDetail.file_hash }}</el-descriptions-item>
+        </el-descriptions>
+
+        <div class="lib-body" :class="{ 'lib-body-mobile': isMobile }">
+          <!-- 左：信息核对与修改 -->
+          <div class="lib-info">
+            <div class="lib-info-block">
               <div class="field-title">文件名（不含扩展名）</div>
-              <el-input v-model="editFilename" class="mb16" placeholder="修改文件名" />
-
+              <el-input v-model="editFilename" size="small" placeholder="修改文件名" />
+            </div>
+            <div class="lib-info-block">
               <div class="field-title">文档类型</div>
-              <el-input v-model="editDocType" placeholder="如：销售合同" class="mb16" />
-
+              <el-input v-model="editDocType" size="small" placeholder="如：销售合同" />
+            </div>
+            <div class="lib-info-block">
               <div class="field-title">归档分类</div>
-              <el-select v-model="editCategory" filterable allow-create clearable class="mb16 lib-w100">
+              <el-select v-model="editCategory" filterable allow-create clearable size="small" class="lib-w100">
                 <el-option v-for="c in categories" :key="c" :label="c" :value="c" />
               </el-select>
-
+            </div>
+            <div class="lib-info-block">
               <div class="field-title">识别字段（可修改）</div>
               <div class="fields-grid">
                 <div v-for="k in Object.keys(editFields)" :key="k" class="field-row">
@@ -517,22 +481,26 @@ onMounted(async () => {
                   <el-input v-model="editFields[k]" size="small" />
                 </div>
               </div>
-              <el-empty
-                v-if="Object.keys(editFields).length === 0"
-                description="暂无识别字段"
-                :image-size="50"
-              />
-
+              <el-empty v-if="Object.keys(editFields).length === 0" description="暂无识别字段" :image-size="50" />
+            </div>
+            <div class="lib-info-block">
               <div class="field-title">提取文本</div>
               <el-input type="textarea" :rows="6" readonly :model-value="editDetail.extracted_text.slice(0, 2000)" />
+            </div>
+          </div>
 
-              <div class="actions">
-                <el-button type="primary" @click="saveEdit">保存修改</el-button>
-                <el-button @click="closePanel">关闭</el-button>
-              </div>
-            </template>
+          <!-- 右：原件预览 -->
+          <div class="lib-preview">
+            <div class="lib-preview-bar">
+              <span class="lib-preview-name">原件预览</span>
+            </div>
+            <DocumentPreview :doc-id="editDetail.id" :name="selectedDoc.current_filename" :file-type="previewExt" />
           </div>
         </div>
+      </template>
+
+      <div v-else class="lib-placeholder">
+        <el-empty description="从左侧选择文档查看全景详情" />
       </div>
     </main>
   </div>
@@ -550,7 +518,7 @@ onMounted(async () => {
 }
 
 .lib-side {
-  width: 300px;
+  width: 360px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -559,7 +527,7 @@ onMounted(async () => {
   border: 1px solid #ebeef5;
   padding: 12px;
   gap: 10px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .lib-main {
@@ -570,7 +538,7 @@ onMounted(async () => {
   background: #fff;
   border-radius: 8px;
   border: 1px solid #ebeef5;
-  padding: 12px;
+  padding: 14px;
   overflow: hidden;
 }
 
@@ -583,16 +551,19 @@ onMounted(async () => {
   color: #303133;
   padding-bottom: 8px;
   border-bottom: 1px solid #f0f2f5;
+  flex-shrink: 0;
 }
 
 .lib-search {
   width: 100%;
+  flex-shrink: 0;
 }
 
 .lib-filter-block {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 
 .lib-filter-label {
@@ -608,13 +579,15 @@ onMounted(async () => {
 .lib-side-divider {
   height: 1px;
   background: #f0f2f5;
-  margin: 4px 0;
+  margin: 2px 0;
+  flex-shrink: 0;
 }
 
 .lib-batch {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .lib-selected-tip {
@@ -623,93 +596,182 @@ onMounted(async () => {
   text-align: center;
 }
 
-.lib-side-foot {
-  margin-top: auto;
-  text-align: center;
-  padding-top: 8px;
-}
-
-/* 表格区 */
-.lib-table-wrap {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
-/* ============ 内嵌分屏 ============ */
-.lib-split {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.lib-split-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #fafbfc;
-  border-bottom: 1px solid #f0f2f5;
+.lib-list-label {
+  font-size: 12px;
+  color: #909399;
   flex-shrink: 0;
 }
 
-.lib-split-name {
+/* 文档列表（点击选中 → 右侧详情） */
+.lib-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lib-doc-card {
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.lib-doc-card:hover {
+  border-color: #409eff;
+  box-shadow: 0 2px 8px rgba(64, 158, 255, 0.12);
+}
+
+.lib-doc-card.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.lib-doc-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.lib-doc-name {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
   color: #303133;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.4;
 }
 
-.lib-split-body {
+.lib-doc-meta {
+  margin: 6px 0 4px 26px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lib-doc-foot {
+  margin-left: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.lib-side-foot {
+  text-align: center;
+  padding-top: 4px;
+  flex-shrink: 0;
+}
+
+/* ============ 右侧全景详情 ============ */
+.lib-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.lib-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.lib-detail-title h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #303133;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib-detail-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lib-desc {
+  margin-top: 12px;
+  flex-shrink: 0;
+}
+
+.lib-body {
   flex: 1;
   min-height: 0;
+  margin-top: 12px;
   display: flex;
   gap: 12px;
+}
+
+/* 左：信息核对 */
+.lib-info {
+  width: 40%;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
   padding: 12px;
 }
 
-.lib-split-left {
-  flex: 0 0 auto;
+.lib-info-block {
+  margin-bottom: 14px;
+}
+
+/* 右：预览 */
+.lib-preview {
+  flex: 1;
   min-width: 0;
   border: 1px solid #ebeef5;
   border-radius: 8px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: #f5f6f8;
 }
 
-.splitter {
-  flex: 0 0 8px;
-  cursor: col-resize;
-  border-radius: 4px;
-  transition: background 0.2s;
-  touch-action: none;
+.lib-preview-bar {
+  padding: 8px 12px;
+  background: #fafbfc;
+  border-bottom: 1px solid #f0f2f5;
+  flex-shrink: 0;
 }
 
-.splitter:hover {
-  background: #409eff40;
+.lib-preview-name {
+  font-size: 12px;
+  color: #606266;
 }
 
-.lib-split-right {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-y: auto;
-  padding-right: 4px;
+.lib-preview :deep(.doc-preview) {
+  flex: 1;
+}
+
+.lib-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ============ 表单小组件 ============ */
-.mb16 { margin-bottom: 16px; }
 .field-title {
   font-size: 13px;
   font-weight: 600;
   color: #606266;
-  margin: 12px 0 6px;
+  margin: 0 0 6px;
 }
 .fields-grid {
   display: grid;
@@ -726,11 +788,6 @@ onMounted(async () => {
   font-size: 12px;
   color: #909399;
   flex-shrink: 0;
-}
-.actions {
-  margin-top: 20px;
-  display: flex;
-  gap: 12px;
 }
 .gray { color: #909399; }
 .small { font-size: 12px; }
@@ -766,51 +823,6 @@ onMounted(async () => {
   margin-top: 4px;
 }
 
-/* 手机端卡片列表 */
-.mobile-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  overflow-y: auto;
-  min-height: 0;
-}
-.doc-card {
-  background: #fff;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  padding: 12px;
-}
-.doc-card-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-.doc-name {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-  word-break: break-all;
-  line-height: 1.4;
-}
-.doc-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0 4px 24px;
-}
-.doc-time {
-  margin-left: 24px;
-}
-.doc-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-left: 24px;
-  margin-top: 6px;
-}
-
 /* ============ 移动端 ============ */
 @media (max-width: 768px) {
   .lib-page {
@@ -821,28 +833,24 @@ onMounted(async () => {
 
   .lib-side {
     width: 100%;
-    max-height: none;
+    max-height: 48vh;
   }
 
   .lib-main {
-    min-height: 55vh;
+    min-height: 60vh;
   }
 
-  .lib-split-body {
+  .lib-body {
     flex-direction: column;
   }
 
-  .lib-split-left {
-    flex: none;
-    height: 45vh;
+  .lib-info {
+    width: 100%;
+    max-height: 320px;
   }
 
-  .lib-split-right {
-    flex: none;
-  }
-
-  .splitter {
-    display: none;
+  .lib-preview {
+    height: 55vh;
   }
 }
 </style>
