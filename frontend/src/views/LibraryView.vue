@@ -8,6 +8,7 @@ import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   addBusinessFile,
   batchDeleteDocuments,
+  createBusinessArchive,
   deleteDocument,
   exportDocumentsZip,
   getDocument,
@@ -18,6 +19,7 @@ import {
   openDocumentFile,
   suggestDocuments,
   updateDocument,
+  type BusinessArchiveCreate,
   type BusinessRecordOut,
   type DocumentDetail,
   type DocumentListItem,
@@ -317,6 +319,64 @@ async function doLinkArchive() {
   }
 }
 
+// ---------------- 新建档案并归集 ----------------
+const archiveCreateVisible = ref(false)
+const archiveCreating = ref(false)
+const archiveForm = ref<BusinessArchiveCreate>({
+  business_no: '',
+  title: '',
+  ship_name: '',
+  counterparty: '',
+  business_type: '',
+  total_amount: undefined,
+  sign_date: '',
+})
+
+function openArchiveCreate() {
+  archiveForm.value = {
+    business_no: editFields.value['contract_no'] || '',
+    title: editFields.value['contract_no'] || '',
+    ship_name: editFields.value['vessel'] || '',
+    counterparty: editFields.value['company'] || '',
+    business_type: '',
+    total_amount: editFields.value['amount'] ? Number(editFields.value['amount']) : undefined,
+    sign_date: '',
+  }
+  archiveCreateVisible.value = true
+}
+
+async function doArchiveCreateAndLink() {
+  if (!selectedDoc.value) return
+  const no = archiveForm.value.business_no.trim()
+  if (!no) {
+    ElMessage.warning('请填写合同号 / 业务编号')
+    return
+  }
+  archiveCreating.value = true
+  try {
+    const payload: BusinessArchiveCreate = {
+      business_no: no,
+      title: archiveForm.value.title?.trim() || no,
+      business_type: archiveForm.value.business_type?.trim() || undefined,
+      ship_name: archiveForm.value.ship_name?.trim() || undefined,
+      counterparty: archiveForm.value.counterparty?.trim() || undefined,
+      total_amount: archiveForm.value.total_amount ?? undefined,
+      sign_date: archiveForm.value.sign_date || undefined,
+      status: 'active',
+    }
+    const rec = await createBusinessArchive(payload)
+    // 创建成功后直接归集当前文档
+    await addBusinessFile(rec.data.id, selectedDoc.value.id)
+    ElMessage.success(`已创建档案 ${rec.data.business_no} 并归集`)
+    archiveDialogVisible.value = false
+    archiveCreateVisible.value = false
+  } catch (e: any) {
+    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+  } finally {
+    archiveCreating.value = false
+  }
+}
+
 function fmtSize(n: number): string {
   if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
   if (n > 1024) return (n / 1024).toFixed(1) + ' KB'
@@ -565,7 +625,7 @@ onMounted(async () => {
     </div>
 
     <!-- ============ 归集到业务档案 ============ -->
-    <el-dialog v-model="archiveDialogVisible" title="归集到业务档案" width="640px" :append-to-body="true">
+    <el-dialog v-model="archiveDialogVisible" title="归集到业务档案" width="640px" class="arc-dialog" :append-to-body="true">
       <div class="arc-search">
         <el-input
           v-model="archiveKeyword"
@@ -576,8 +636,9 @@ onMounted(async () => {
           @clear="onArchiveSearch"
         />
         <el-button size="small" @click="onArchiveSearch">搜索</el-button>
+        <el-button type="primary" plain size="small" @click="openArchiveCreate">新建档案</el-button>
       </div>
-      <div v-loading="archiveLoading" class="arc-list">
+      <div v-loading="archiveLoading" class="arc-list" :class="{ compact: archiveCreateVisible }">
         <div
           v-for="a in archiveList"
           :key="a.id"
@@ -596,7 +657,38 @@ onMounted(async () => {
             <span>{{ a.status === 'active' ? '进行中' : a.status === 'completed' ? '已完成' : '已归档' }}</span>
           </div>
         </div>
-        <el-empty v-if="!archiveLoading && archiveList.length === 0" description="未找到档案，可先到「业务档案」页新建" :image-size="60" />
+        <el-empty v-if="!archiveLoading && archiveList.length === 0" description="未找到档案" :image-size="60" />
+      </div>
+
+      <!-- 新建档案并归集 -->
+      <div v-if="archiveCreateVisible" class="arc-create">
+        <div class="arc-create-title">新建业务档案并归集当前文档</div>
+        <el-form :model="archiveForm" label-width="90px" size="small">
+          <el-form-item label="合同号" required>
+            <el-input v-model="archiveForm.business_no" placeholder="如 SJWLXS（DD）-2026-YC0452" />
+          </el-form-item>
+          <el-form-item label="档案名称">
+            <el-input v-model="archiveForm.title" placeholder="默认与合同号一致" />
+          </el-form-item>
+          <el-form-item label="船名">
+            <el-input v-model="archiveForm.ship_name" />
+          </el-form-item>
+          <el-form-item label="对方单位">
+            <el-input v-model="archiveForm.counterparty" />
+          </el-form-item>
+          <el-form-item label="金额（元）">
+            <el-input-number v-model="archiveForm.total_amount" :precision="2" :controls="false" style="width: 100%" />
+          </el-form-item>
+          <el-form-item label="业务类型">
+            <el-input v-model="archiveForm.business_type" placeholder="如：销售 / 采购" />
+          </el-form-item>
+        </el-form>
+        <div class="arc-create-ops">
+          <el-button size="small" @click="archiveCreateVisible = false">取消新建</el-button>
+          <el-button size="small" type="primary" :loading="archiveCreating" @click="doArchiveCreateAndLink">
+            创建并归集
+          </el-button>
+        </div>
       </div>
       <template #footer>
         <el-button @click="archiveDialogVisible = false">取消</el-button>
@@ -888,6 +980,15 @@ onMounted(async () => {
   padding: 8px;
 }
 
+.arc-list.compact {
+  max-height: 150px;
+}
+
+:deep(.arc-dialog .el-dialog__body) {
+  max-height: 72vh;
+  overflow-y: auto;
+}
+
 .arc-card {
   padding: 10px 12px;
   border: 1px solid #ebeef5;
@@ -938,6 +1039,28 @@ onMounted(async () => {
   justify-content: space-between;
   font-size: 12px;
   color: #606266;
+}
+
+/* 新建档案并归集 */
+.arc-create {
+  margin-top: 10px;
+  border: 1px dashed #409eff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #f5f9ff;
+}
+
+.arc-create-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+  margin-bottom: 8px;
+}
+
+.arc-create-ops {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* ============ 表单小组件 ============ */
