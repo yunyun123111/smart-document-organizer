@@ -6,16 +6,19 @@ import { useMobile } from '@/composables/useMobile'
 import { useSplitDrag } from '@/composables/useSplitDrag'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
+  addBusinessFile,
   batchDeleteDocuments,
   deleteDocument,
   exportDocumentsZip,
   getDocument,
+  listBusinessArchives,
   listDocumentCategories,
   listDocuments,
   listDocumentTypes,
   openDocumentFile,
   suggestDocuments,
   updateDocument,
+  type BusinessRecordOut,
   type DocumentDetail,
   type DocumentListItem,
   type SuggestItem,
@@ -256,6 +259,64 @@ async function saveEdit() {
   }
 }
 
+// ---------------- 归集到业务档案 ----------------
+const archiveDialogVisible = ref(false)
+const archiveList = ref<BusinessRecordOut[]>([])
+const archiveKeyword = ref('')
+const archiveSelectedId = ref<number | null>(null)
+const archiveLoading = ref(false)
+const archiveLinking = ref(false)
+
+async function loadArchives() {
+  archiveLoading.value = true
+  try {
+    const res = await listBusinessArchives({
+      keyword: archiveKeyword.value || undefined,
+      limit: 100,
+    })
+    archiveList.value = res.items
+  } catch {
+    archiveList.value = []
+  } finally {
+    archiveLoading.value = false
+  }
+}
+
+async function openArchiveDialog() {
+  if (!selectedDoc.value || !editDetail.value) return
+  archiveKeyword.value = editFields.value['contract_no'] || ''
+  archiveSelectedId.value = null
+  archiveDialogVisible.value = true
+  await loadArchives()
+  // 若文档已有合同号，自动匹配同号档案并选中
+  if (archiveKeyword.value) {
+    const norm = (s: string) => s.replace(/\s+/g, '').toUpperCase()
+    const hit = archiveList.value.find(
+      (a) => norm(a.business_no) === norm(archiveKeyword.value),
+    )
+    if (hit) archiveSelectedId.value = hit.id
+  }
+}
+
+function onArchiveSearch() {
+  archiveSelectedId.value = null
+  loadArchives()
+}
+
+async function doLinkArchive() {
+  if (!archiveSelectedId.value || !selectedDoc.value) return
+  archiveLinking.value = true
+  try {
+    const rec = await addBusinessFile(archiveSelectedId.value, selectedDoc.value.id)
+    ElMessage.success(`已归集到 ${rec.data.business_no}`)
+    archiveDialogVisible.value = false
+  } catch (e: any) {
+    if (e?.response?.data?.detail) ElMessage.error(e.response.data.detail)
+  } finally {
+    archiveLinking.value = false
+  }
+}
+
 function fmtSize(n: number): string {
   if (n > 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB'
   if (n > 1024) return (n / 1024).toFixed(1) + ' KB'
@@ -439,6 +500,7 @@ onMounted(async () => {
             </div>
             <div class="lib-detail-ops">
               <el-button v-if="editDetail.status === 'archived'" size="small" type="success" plain @click="openFile(editDetail.id)">打开原件</el-button>
+              <el-button size="small" type="primary" plain @click="openArchiveDialog">归集到档案</el-button>
               <el-button size="small" type="primary" :loading="editSaving" @click="saveEdit">保存修改</el-button>
               <el-button size="small" @click="closeDetail">关闭</el-button>
             </div>
@@ -501,6 +563,48 @@ onMounted(async () => {
         </div>
       </main>
     </div>
+
+    <!-- ============ 归集到业务档案 ============ -->
+    <el-dialog v-model="archiveDialogVisible" title="归集到业务档案" width="640px" :append-to-body="true">
+      <div class="arc-search">
+        <el-input
+          v-model="archiveKeyword"
+          placeholder="搜索合同号 / 船名 / 对方单位"
+          clearable
+          size="small"
+          @keyup.enter="onArchiveSearch"
+          @clear="onArchiveSearch"
+        />
+        <el-button size="small" @click="onArchiveSearch">搜索</el-button>
+      </div>
+      <div v-loading="archiveLoading" class="arc-list">
+        <div
+          v-for="a in archiveList"
+          :key="a.id"
+          class="arc-card"
+          :class="{ active: archiveSelectedId === a.id }"
+          @click="archiveSelectedId = a.id"
+        >
+          <div class="arc-card-head">
+            <span class="arc-no">{{ a.business_no }}</span>
+            <el-tag v-if="a.completeness?.complete" size="small" type="success">单据齐全</el-tag>
+            <el-tag v-else-if="a.completeness" size="small" type="warning">缺 {{ a.completeness.missing_labels.join('、') }}</el-tag>
+          </div>
+          <div class="arc-card-title">{{ a.title || '（未命名档案）' }} · {{ a.ship_name || '—' }}</div>
+          <div class="arc-card-meta">
+            <span>已归集 {{ a.file_count }} 份单据</span>
+            <span>{{ a.status === 'active' ? '进行中' : a.status === 'completed' ? '已完成' : '已归档' }}</span>
+          </div>
+        </div>
+        <el-empty v-if="!archiveLoading && archiveList.length === 0" description="未找到档案，可先到「业务档案」页新建" :image-size="60" />
+      </div>
+      <template #footer>
+        <el-button @click="archiveDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="archiveLinking" :disabled="archiveSelectedId === null" @click="doLinkArchive">
+          归集{{ archiveSelectedId !== null ? '：' + (archiveList.find((x) => x.id === archiveSelectedId)?.business_no || '') : '' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -767,6 +871,73 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ---------- 归集到档案弹窗 ---------- */
+.arc-search {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.arc-list {
+  max-height: 380px;
+  overflow-y: auto;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.arc-card {
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.arc-card:last-child {
+  margin-bottom: 0;
+}
+
+.arc-card:hover {
+  border-color: #409eff;
+}
+
+.arc-card.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.arc-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arc-no {
+  font-weight: 600;
+  font-size: 13px;
+  color: #303133;
+}
+
+.arc-card-title {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arc-card-meta {
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #606266;
 }
 
 /* ============ 表单小组件 ============ */
