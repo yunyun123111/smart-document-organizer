@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
+import { useSplitDrag } from '@/composables/useSplitDrag'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   batchDeleteDocuments,
@@ -208,6 +209,9 @@ const previewExt = computed(() => {
   const name = selectedDoc.value?.current_filename || selectedDoc.value?.original_filename || ''
   return name.toLowerCase().split('.').pop() || ''
 })
+
+// 预览区与编辑区可拖拽调宽
+const { leftRatio, startDrag } = useSplitDrag()
 
 async function selectDoc(row: DocumentListItem) {
   selectedDoc.value = row
@@ -433,7 +437,7 @@ onMounted(async () => {
       </div>
     </aside>
 
-    <!-- ============ 右：全景详情（预览 + 信息核对与修改） ============ -->
+    <!-- ============ 右：全景详情（大预览 + 窄编辑列） ============ -->
     <main class="lib-main">
       <template v-if="selectedDoc && editDetail">
         <div class="lib-detail-head">
@@ -449,16 +453,26 @@ onMounted(async () => {
           </div>
         </div>
 
-        <el-descriptions :column="isMobile ? 1 : 4" border size="small" class="lib-desc">
-          <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
-          <el-descriptions-item label="大小">{{ fmtSize(editDetail.file_size) }}</el-descriptions-item>
-          <el-descriptions-item label="归档路径">{{ editDetail.current_path }}</el-descriptions-item>
-          <el-descriptions-item label="SHA256">{{ editDetail.file_hash }}</el-descriptions-item>
-        </el-descriptions>
+        <div class="lib-body review-split" :class="{ 'lib-body-mobile': isMobile }">
+          <!-- 左：原件预览（大，可拖拽调宽） -->
+          <div class="lib-preview" :style="{ flexBasis: leftRatio + '%' }">
+            <div class="lib-preview-bar">
+              <span class="lib-preview-name">原件预览</span>
+            </div>
+            <DocumentPreview :doc-id="editDetail.id" :name="selectedDoc.current_filename" :file-type="previewExt" />
+          </div>
 
-        <div class="lib-body" :class="{ 'lib-body-mobile': isMobile }">
-          <!-- 左：信息核对与修改 -->
+          <div class="splitter" @mousedown="startDrag" />
+
+          <!-- 右：信息核对与修改（窄列滚动） -->
           <div class="lib-info">
+            <el-descriptions :column="1" border size="small" class="mb16">
+              <el-descriptions-item label="原文件名">{{ editDetail.original_filename }}</el-descriptions-item>
+              <el-descriptions-item label="大小">{{ fmtSize(editDetail.file_size) }}</el-descriptions-item>
+              <el-descriptions-item label="归档路径">{{ editDetail.current_path }}</el-descriptions-item>
+              <el-descriptions-item label="SHA256">{{ editDetail.file_hash }}</el-descriptions-item>
+            </el-descriptions>
+
             <div class="lib-info-block">
               <div class="field-title">文件名（不含扩展名）</div>
               <el-input v-model="editFilename" size="small" placeholder="修改文件名" />
@@ -485,16 +499,8 @@ onMounted(async () => {
             </div>
             <div class="lib-info-block">
               <div class="field-title">提取文本</div>
-              <el-input type="textarea" :rows="6" readonly :model-value="editDetail.extracted_text.slice(0, 2000)" />
+              <el-input type="textarea" :rows="5" readonly :model-value="editDetail.extracted_text.slice(0, 1500)" />
             </div>
-          </div>
-
-          <!-- 右：原件预览 -->
-          <div class="lib-preview">
-            <div class="lib-preview-bar">
-              <span class="lib-preview-name">原件预览</span>
-            </div>
-            <DocumentPreview :doc-id="editDetail.id" :name="selectedDoc.current_filename" :file-type="previewExt" />
           </div>
         </div>
       </template>
@@ -518,15 +524,15 @@ onMounted(async () => {
 }
 
 .lib-side {
-  width: 360px;
+  width: 300px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   background: #fff;
   border-radius: 8px;
   border: 1px solid #ebeef5;
-  padding: 12px;
-  gap: 10px;
+  padding: 10px 12px;
+  gap: 8px;
   overflow: hidden;
 }
 
@@ -609,11 +615,11 @@ onMounted(async () => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .lib-doc-card {
-  padding: 10px 12px;
+  padding: 8px 10px;
   border: 1px solid #ebeef5;
   border-radius: 8px;
   cursor: pointer;
@@ -712,15 +718,16 @@ onMounted(async () => {
 .lib-body {
   flex: 1;
   min-height: 0;
-  margin-top: 12px;
+  margin-top: 10px;
   display: flex;
-  gap: 12px;
+  gap: 10px;
 }
 
-/* 左：信息核对 */
+/* 右：信息核对（窄列滚动，预览优先） */
 .lib-info {
-  width: 40%;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-width: 320px;
+  max-width: 400px;
   overflow-y: auto;
   border: 1px solid #ebeef5;
   border-radius: 8px;
@@ -728,12 +735,12 @@ onMounted(async () => {
 }
 
 .lib-info-block {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
-/* 右：预览 */
+/* 左：预览（大，默认占多数，可拖拽） */
 .lib-preview {
-  flex: 1;
+  flex: 0 0 auto;
   min-width: 0;
   border: 1px solid #ebeef5;
   border-radius: 8px;
@@ -759,6 +766,18 @@ onMounted(async () => {
   flex: 1;
 }
 
+.splitter {
+  flex: 0 0 8px;
+  cursor: col-resize;
+  border-radius: 4px;
+  transition: background 0.2s;
+  touch-action: none;
+}
+
+.splitter:hover {
+  background: #409eff40;
+}
+
 .lib-placeholder {
   flex: 1;
   display: flex;
@@ -767,6 +786,7 @@ onMounted(async () => {
 }
 
 /* ============ 表单小组件 ============ */
+.mb16 { margin-bottom: 16px; }
 .field-title {
   font-size: 13px;
   font-weight: 600;
@@ -845,12 +865,18 @@ onMounted(async () => {
   }
 
   .lib-info {
+    min-width: 0;
+    max-width: none;
     width: 100%;
     max-height: 320px;
   }
 
   .lib-preview {
     height: 55vh;
+  }
+
+  .splitter {
+    display: none;
   }
 }
 </style>
