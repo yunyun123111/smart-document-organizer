@@ -29,6 +29,32 @@ def _norm_text(text: str) -> str:
     return re.sub(r"[\s\u3000]+", "", text or "").lower()
 
 
+# 公司名有效性：过滤 OCR 识别残缺/错误的公司名
+_INVALID_COMPANY_PATTERNS = (
+    "盖章", "电子章", "签字", "签名", "日期", "金额",
+    "数量", "单价", "合计", "备注", "编号", "合同号",
+    "船名", "物料", "品种", "规格", "交货", "结算",
+    "发票", "税号", "地址", "电话", "传真", "开户",
+    "账号", "邮编", "单位", "部门", "经办人", "审核",
+    "批准", "同意", "确认", "收到", "交付", "验收",
+)
+
+
+def _is_valid_company(name: str) -> bool:
+    """判断公司名是否有效（非残缺、非 OCR 误识别）。"""
+    name = (name or "").strip()
+    if len(name) < 4:
+        return False
+    # 包含明显非公司名词的，视为无效
+    for pat in _INVALID_COMPANY_PATTERNS:
+        if pat in name:
+            return False
+    # 纯数字/纯符号的无效
+    if re.match(r"^[\d\s\W]+$", name):
+        return False
+    return True
+
+
 def text_fingerprint(doc: "Document") -> str:
     """内容指纹：归一化文本的 SHA256 前缀。无文本返回空串。"""
     norm = _norm_text(doc.extracted_text)
@@ -64,17 +90,28 @@ def cluster_documents(docs: list["Document"]) -> list[dict]:
     for no, lst in by_contract.items():
         _add(f"contract:{no}", f"合同号 {no}", lst)
 
-    # 2) 公司名
+    # 2) 文档类型（同类型 ≥2 份成组，比公司名更稳定）
+    rest = [t for t in items if t[0].id not in assigned]
+    by_type: dict[str, list] = {}
+    for d, _fields in rest:
+        dt = (d.document_type or "").strip()
+        if dt and dt not in ("其他", "未识别"):
+            by_type.setdefault(dt, []).append(d)
+    for dt, lst in by_type.items():
+        if len(lst) >= 2:
+            _add(f"type:{dt}", f"类型 {dt}", lst)
+
+    # 3) 公司名（过滤无效公司名，避免 OCR 残缺导致分组混乱）
     rest = [t for t in items if t[0].id not in assigned]
     by_company: dict[str, list] = {}
     for d, fields in rest:
         co = (fields.get("company") or "").strip()
-        if co:
+        if co and _is_valid_company(co):
             by_company.setdefault(co, []).append(d)
     for co, lst in by_company.items():
         _add(f"company:{co}", f"公司 {co}", lst)
 
-    # 3) 模板版式（document_type + 内容指纹，同版式 ≥2 份）
+    # 4) 模板版式（document_type + 内容指纹，同版式 ≥2 份）
     rest = [t for t in items if t[0].id not in assigned]
     by_tpl: dict[tuple, list] = {}
     for d, _fields in rest:
@@ -87,7 +124,7 @@ def cluster_documents(docs: list["Document"]) -> list[dict]:
         if len(lst) >= 2:
             _add(f"tpl:{t}:{fp[:6]}", f"同类 {t}", lst)
 
-    # 4) 未分组
+    # 5) 未分组
     rest = [t for t in items if t[0].id not in assigned]
     for d, _fields in rest:
         _add(f"single:{d.id}", "未分组", [d])

@@ -7,21 +7,19 @@ import {
   batchApprove,
   batchDeleteDocuments,
   getReviewDetail,
-  listReviewGroups,
+  listReview,
   skipReview,
   type DocumentListItem,
   type ReviewDetail,
-  type ReviewGroup,
 } from '@/api'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 
-const groups = ref<ReviewGroup[]>([])
+const docs = ref<DocumentListItem[]>([])
 const loading = ref(false)
-const reviewOpen = ref(false)
 const detail = ref<ReviewDetail | null>(null)
 const saving = ref(false)
-const groupSelected = ref<Record<string, number[]>>({})
-const groupBusy = ref<string | null>(null)
+const selectedIds = ref<number[]>([])
+const currentId = ref<number | null>(null)
 
 const editableFields = ref<Record<string, string>>({})
 const docType = ref('')
@@ -30,40 +28,35 @@ const customFilename = ref('')
 // 分屏可拖拽调整左右宽度
 const { leftRatio, startDrag } = useSplitDrag()
 
-const totalCount = computed(() => groups.value.reduce((n, g) => n + g.documents.length, 0))
+const totalCount = computed(() => docs.value.length)
+const selectedCount = computed(() => selectedIds.value.length)
+const isAllSelected = computed(() => docs.value.length > 0 && selectedIds.value.length === docs.value.length)
 
-function selCount(key: string): number {
-  return (groupSelected.value[key] || []).length
+function onSelectionChange(rows: DocumentListItem[]) {
+  selectedIds.value = rows.map((r) => r.id)
 }
 
-function onGroupSelection(key: string, rows: DocumentListItem[]) {
-  groupSelected.value[key] = rows.map((r) => r.id)
+function toggleAll() {
+  selectedIds.value = isAllSelected.value ? [] : docs.value.map((d) => d.id)
 }
 
-function toggleAllInGroup(g: ReviewGroup) {
-  const all = g.documents.map((d) => d.id)
-  const cur = groupSelected.value[g.group_key] || []
-  groupSelected.value[g.group_key] = cur.length === all.length && all.length > 0 ? [] : [...all]
-}
-
-async function groupApprove(g: ReviewGroup) {
-  const ids = groupSelected.value[g.group_key] || []
-  if (ids.length === 0) {
+async function batchApproveAll() {
+  if (selectedIds.value.length === 0) {
     ElMessage.warning('请先勾选要归档的文件')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `将按各自建议分类与文件名，批量确认归档「${g.group_label}」的 ${ids.length} 个文件？`,
+      `将按各自建议分类与文件名，批量确认归档选中的 ${selectedIds.value.length} 个文件？`,
       '批量确认归档',
       { type: 'warning' },
     )
   } catch {
     return
   }
-  groupBusy.value = g.group_key
+  saving.value = true
   try {
-    const res = await batchApprove(ids)
+    const res = await batchApprove(selectedIds.value)
     if (res.failed_count === 0) {
       ElMessage.success(`已归档 ${res.success_count} 个文件`)
     } else {
@@ -71,45 +64,56 @@ async function groupApprove(g: ReviewGroup) {
       const errs = res.results.filter((r) => !r.success).map((r) => r.error || '未知错误')
       ElMessageBox.alert(`失败原因：${errs.join('；')}`, '部分归档失败', { type: 'warning' })
     }
+    if (currentId.value && selectedIds.value.includes(currentId.value)) {
+      currentId.value = null
+      detail.value = null
+    }
+    selectedIds.value = []
     await load()
   } finally {
-    groupBusy.value = null
+    saving.value = false
   }
 }
 
-async function groupRemove(g: ReviewGroup) {
-  const ids = groupSelected.value[g.group_key] || []
-  if (ids.length === 0) {
+async function batchRemoveAll() {
+  if (selectedIds.value.length === 0) {
     ElMessage.warning('请先勾选要移除的文件')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `确定要移除「${g.group_label}」的 ${ids.length} 个文件吗？\n文件不会立即永久删除，而是会移动到回收站，之后可以恢复。`,
+      `确定要移除选中的 ${selectedIds.value.length} 个文件吗？\n文件不会立即永久删除，而是会移动到回收站，之后可以恢复。`,
       '批量移除',
       { type: 'warning', confirmButtonText: '移入回收站', cancelButtonText: '取消' },
     )
   } catch {
     return
   }
-  groupBusy.value = g.group_key
+  saving.value = true
   try {
-    const res = await batchDeleteDocuments(ids)
+    const res = await batchDeleteDocuments(selectedIds.value)
     ElMessage.success(`已移入回收站 ${res.deleted_count} 个文件`)
+    if (currentId.value && selectedIds.value.includes(currentId.value)) {
+      currentId.value = null
+      detail.value = null
+    }
+    selectedIds.value = []
     await load()
   } finally {
-    groupBusy.value = null
+    saving.value = false
   }
 }
 
 async function load() {
   loading.value = true
   try {
-    groups.value = await listReviewGroups()
+    docs.value = await listReview()
     // 清理已消失文档的勾选
-    const alive = new Set(groups.value.flatMap((g) => g.documents.map((d) => d.id)))
-    for (const k of Object.keys(groupSelected.value)) {
-      groupSelected.value[k] = (groupSelected.value[k] || []).filter((id) => alive.has(id))
+    const alive = new Set(docs.value.map((d) => d.id))
+    selectedIds.value = selectedIds.value.filter((id) => alive.has(id))
+    if (currentId.value && !alive.has(currentId.value)) {
+      currentId.value = null
+      detail.value = null
     }
   } finally {
     loading.value = false
@@ -117,12 +121,12 @@ async function load() {
 }
 
 function closeReview() {
-  reviewOpen.value = false
+  currentId.value = null
   detail.value = null
 }
 
 async function open(id: number) {
-  reviewOpen.value = true
+  currentId.value = id
   detail.value = null
   detail.value = await getReviewDetail(id)
   docType.value = detail.value.document.document_type || ''
@@ -130,6 +134,15 @@ async function open(id: number) {
   customFilename.value = ''
   editableFields.value = { ...detail.value.fields }
   delete editableFields.value['suggested_category']
+  // 选中行自动滚动到可见区域
+  setTimeout(() => {
+    const el = document.querySelector('.is-selected-row')
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, 50)
+}
+
+function rowClassName({ row }: { row: DocumentListItem }) {
+  return row.id === currentId.value ? 'is-selected-row' : ''
 }
 
 async function confirmArchive() {
@@ -177,143 +190,144 @@ onMounted(load)
 
 <template>
   <div class="rv-page">
-    <!-- ============ 左：待确认分组列表 ============ -->
+    <!-- ============ 左：待确认文件列表（平铺） ============ -->
     <main class="rv-list">
       <div class="rv-head">
         <div class="rv-title">
           <span>待人工确认</span>
           <el-tag v-if="totalCount" size="small" type="warning">{{ totalCount }} 份</el-tag>
         </div>
-        <el-button size="small" @click="load">刷新</el-button>
+        <div class="rv-head-actions">
+          <el-button size="small" @click="load">刷新</el-button>
+        </div>
       </div>
 
-      <div v-if="!loading && groups.length === 0" class="rv-empty">
+      <!-- 批量操作栏 -->
+      <div class="rv-toolbar">
+        <el-checkbox :model-value="isAllSelected" :indeterminate="selectedCount > 0 && !isAllSelected" @change="toggleAll">
+          全选
+        </el-checkbox>
+        <span v-if="selectedCount" class="selected-info">已选 {{ selectedCount }} 份</span>
+        <div class="rv-toolbar-actions">
+          <el-button
+            type="success"
+            size="small"
+            :disabled="selectedCount === 0"
+            :loading="saving"
+            @click="batchApproveAll"
+          >确认归档（{{ selectedCount }}）</el-button>
+          <el-button
+            type="danger"
+            size="small"
+            :disabled="selectedCount === 0"
+            :loading="saving"
+            @click="batchRemoveAll"
+          >移入回收站（{{ selectedCount }}）</el-button>
+        </div>
+      </div>
+
+      <div v-if="!loading && docs.length === 0" class="rv-empty">
         <el-empty description="暂无待确认文件" />
       </div>
 
-      <div v-loading="loading" class="groups">
-        <div v-for="g in groups" :key="g.group_key" class="group-card">
-          <div class="group-head">
-            <div class="group-title">
-              <span class="group-label">{{ g.group_label }}</span>
-              <el-tag size="small" :type="g.group_key.startsWith('single') ? 'info' : 'warning'">
-                {{ g.documents.length }} 份
-              </el-tag>
-              <span v-if="selCount(g.group_key)" class="gray small">已选 {{ selCount(g.group_key) }} 份</span>
-            </div>
-            <div class="group-actions">
-              <el-button size="small" @click="toggleAllInGroup(g)">全选本组</el-button>
-              <el-button
-                type="success"
-                size="small"
-                :disabled="selCount(g.group_key) === 0"
-                :loading="groupBusy === g.group_key"
-                @click="groupApprove(g)"
-              >确认归档（{{ selCount(g.group_key) }}）</el-button>
-              <el-button
-                type="danger"
-                size="small"
-                :disabled="selCount(g.group_key) === 0"
-                :loading="groupBusy === g.group_key"
-                @click="groupRemove(g)"
-              >移入回收站（{{ selCount(g.group_key) }}）</el-button>
-            </div>
-          </div>
-          <el-table
-            :data="g.documents"
-            style="width: 100%"
-            @selection-change="(rows: any) => onGroupSelection(g.group_key, rows)"
-          >
-            <el-table-column type="selection" width="45" />
-            <el-table-column prop="original_filename" label="文件名" min-width="200" show-overflow-tooltip />
-            <el-table-column prop="document_type" label="识别类型" width="130">
-              <template #default="{ row }">
-                <el-tag v-if="row.document_type">{{ row.document_type }}</el-tag>
-                <el-tag v-else type="info">未识别</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column prop="file_type" label="类型" width="70" />
-            <el-table-column prop="file_size" label="大小" width="90">
-              <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
-            </el-table-column>
-            <el-table-column label="置信度" width="90">
-              <template #default="{ row }">
-                <span v-if="row.confidence !== null">{{ (row.confidence * 100).toFixed(0) }}%</span>
-                <span v-else class="gray">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column prop="created_at" label="时间" width="160" />
-            <el-table-column label="操作" width="90" fixed="right">
-              <template #default="{ row }">
-                <el-button type="primary" link @click="open(row.id)">审核</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-      </div>
+      <el-table
+        v-else
+        v-loading="loading"
+        :data="docs"
+        style="width: 100%"
+        height="100%"
+        :row-class-name="rowClassName"
+        @selection-change="(rows: any) => onSelectionChange(rows)"
+        @row-click="(row: any) => open(row.id)"
+      >
+        <el-table-column type="selection" width="45" />
+        <el-table-column prop="original_filename" label="文件名" min-width="220" show-overflow-tooltip />
+        <el-table-column prop="document_type" label="识别类型" width="120">
+          <template #default="{ row }">
+            <el-tag v-if="row.document_type" size="small">{{ row.document_type }}</el-tag>
+            <el-tag v-else type="info" size="small">未识别</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="file_type" label="类型" width="70" />
+        <el-table-column prop="file_size" label="大小" width="90">
+          <template #default="{ row }">{{ fmtSize(row.file_size) }}</template>
+        </el-table-column>
+        <el-table-column label="置信度" width="80">
+          <template #default="{ row }">
+            <span v-if="row.confidence !== null">{{ (row.confidence * 100).toFixed(0) }}%</span>
+            <span v-else class="gray">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="时间" width="160" />
+      </el-table>
     </main>
 
     <!-- ============ 右：页面内嵌审核分屏（左预览 + 右核对修改） ============ -->
-    <aside v-if="reviewOpen" class="rv-review">
-      <div class="rv-review-bar">
-        <span class="rv-review-name">
-          {{ detail?.document.current_filename || detail?.document.original_filename || '人工审核' }}
-        </span>
-        <div class="rv-review-ops">
-          <el-button size="small" @click="closeReview">收起</el-button>
-        </div>
+    <aside class="rv-review">
+      <div v-if="!detail" class="rv-empty-panel">
+        <el-empty description="点击左侧文件即可预览并审核" :image-size="80" />
       </div>
-      <div v-if="detail" v-loading="saving" class="review-split">
-        <div class="review-left" :style="{ flexBasis: leftRatio + '%' }">
-          <DocumentPreview
-            :doc-id="detail.document.id"
-            :name="detail.document.current_filename || detail.document.original_filename"
-            :file-type="detail.document.file_type"
-          />
+      <template v-else>
+        <div class="rv-review-bar">
+          <span class="rv-review-name">
+            {{ detail.document.current_filename || detail.document.original_filename || '人工审核' }}
+          </span>
+          <div class="rv-review-ops">
+            <el-button size="small" @click="closeReview">收起</el-button>
+          </div>
         </div>
-        <div class="splitter" @mousedown="startDrag" />
-        <div class="review-right">
-          <el-descriptions :column="1" border size="small" class="mb16">
-            <el-descriptions-item label="原文件名">{{ detail.document.original_filename }}</el-descriptions-item>
-            <el-descriptions-item label="大小">{{ fmtSize(detail.document.file_size) }}</el-descriptions-item>
-            <el-descriptions-item label="识别置信度">
-              {{ detail.document.confidence !== null ? (detail.document.confidence * 100).toFixed(0) + '%' : '—' }}
-            </el-descriptions-item>
-          </el-descriptions>
+        <div v-loading="saving" class="review-split">
+          <div class="review-left" :style="{ flexBasis: leftRatio + '%' }">
+            <DocumentPreview
+              :doc-id="detail.document.id"
+              :name="detail.document.current_filename || detail.document.original_filename"
+              :file-type="detail.document.file_type"
+            />
+          </div>
+          <div class="splitter" @mousedown="startDrag" />
+          <div class="review-right">
+            <el-descriptions :column="1" border size="small" class="mb16">
+              <el-descriptions-item label="原文件名">{{ detail.document.original_filename }}</el-descriptions-item>
+              <el-descriptions-item label="大小">{{ fmtSize(detail.document.file_size) }}</el-descriptions-item>
+              <el-descriptions-item label="识别置信度">
+                {{ detail.document.confidence !== null ? (detail.document.confidence * 100).toFixed(0) + '%' : '—' }}
+              </el-descriptions-item>
+            </el-descriptions>
 
-          <div class="field-title">文档类型</div>
-          <el-input v-model="docType" placeholder="如：销售合同" class="mb16" />
+            <div class="field-title">文档类型</div>
+            <el-input v-model="docType" placeholder="如：销售合同" class="mb16" />
 
-          <div class="field-title">归档分类</div>
-          <el-select v-model="category" filterable allow-create class="mb16 w100">
-            <el-option v-for="c in detail.categories" :key="c" :label="c" :value="c" />
-          </el-select>
+            <div class="field-title">归档分类</div>
+            <el-select v-model="category" filterable allow-create class="mb16 w100">
+              <el-option v-for="c in detail.categories" :key="c" :label="c" :value="c" />
+            </el-select>
 
-          <div class="field-title">识别字段（可修改）</div>
-          <div class="fields-grid">
-            <div v-for="k in Object.keys(editableFields)" :key="k" class="field-row">
-              <span class="field-key">{{ k }}</span>
-              <el-input v-model="editableFields[k]" size="small" />
+            <div class="field-title">识别字段（可修改）</div>
+            <div class="fields-grid">
+              <div v-for="k in Object.keys(editableFields)" :key="k" class="field-row">
+                <span class="field-key">{{ k }}</span>
+                <el-input v-model="editableFields[k]" size="small" />
+              </div>
+            </div>
+            <el-empty v-if="Object.keys(editableFields).length === 0" description="暂无识别字段" :image-size="50" />
+
+            <div class="field-title">建议文件名</div>
+            <el-input v-model="customFilename" :placeholder="detail.suggested_filename" class="mb16" />
+            <div class="gray small">留空则按分类模板自动生成：{{ detail.templates.category }}</div>
+
+            <div class="actions">
+              <el-button type="success" @click="confirmArchive">✓ 确认归档</el-button>
+              <el-button @click="skip">跳过</el-button>
             </div>
           </div>
-          <el-empty v-if="Object.keys(editableFields).length === 0" description="暂无识别字段" :image-size="50" />
-
-          <div class="field-title">建议文件名</div>
-          <el-input v-model="customFilename" :placeholder="detail.suggested_filename" class="mb16" />
-          <div class="gray small">留空则按分类模板自动生成：{{ detail.templates.category }}</div>
-
-          <div class="actions">
-            <el-button type="success" @click="confirmArchive">✓ 确认归档</el-button>
-            <el-button @click="skip">跳过</el-button>
-          </div>
         </div>
-      </div>
+      </template>
     </aside>
   </div>
 </template>
 
 <style scoped>
-/* ============ 页面骨架（与业务档案统一：灰底 / 白卡 / 圆角 / 蓝色主色） ============ */
+/* ============ 页面骨架 ============ */
 .rv-page {
   display: flex;
   gap: 12px;
@@ -354,6 +368,28 @@ onMounted(load)
   color: #303133;
 }
 
+/* 批量操作栏 */
+.rv-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f2f5;
+  flex-shrink: 0;
+}
+
+.selected-info {
+  font-size: 13px;
+  color: #409eff;
+  font-weight: 500;
+}
+
+.rv-toolbar-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
 .rv-empty {
   flex: 1;
   display: flex;
@@ -361,49 +397,15 @@ onMounted(load)
   justify-content: center;
 }
 
-.groups {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-top: 12px;
+/* 选中行高亮 */
+:deep(.is-selected-row) {
+  background-color: #ecf5ff !important;
 }
-
-.group-card {
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  overflow: hidden;
+:deep(.is-selected-row td) {
+  background-color: #ecf5ff !important;
 }
-
-.group-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 10px 12px;
-  background-color: #fafbfc;
-  border-bottom: 1px solid #ebeef5;
-}
-
-.group-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.group-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.group-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+:deep(.el-table__row) {
+  cursor: pointer;
 }
 
 /* ============ 右侧审核面板 ============ */
@@ -416,6 +418,13 @@ onMounted(load)
   border-radius: 8px;
   border: 1px solid #ebeef5;
   overflow: hidden;
+}
+
+.rv-empty-panel {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .rv-review-bar {
