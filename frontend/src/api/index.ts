@@ -407,6 +407,38 @@ export function createRule(data: Partial<Rule>): Promise<Rule> {
   return http.post('/rules', data)
 }
 
+// ---------- 规则模拟器 ----------
+export interface SimulateDetail {
+  document_id: number
+  filename: string
+  actual_type: string
+  predicted_type: string
+  matched: boolean
+  correct: boolean | null
+  keywords: string[]
+}
+
+export interface SimulateResult {
+  rule_type: string
+  tested_rules: number
+  total_tested: number
+  matched: number
+  unmatched: number
+  misclassified: number
+  hit_accuracy: number
+  coverage: number
+  details: SimulateDetail[]
+}
+
+export function simulateRules(data: {
+  rule_type: 'filename' | 'keyword'
+  rule_ids?: number[]
+  category_id?: number
+  limit?: number
+}): Promise<SimulateResult> {
+  return http.post('/rule-simulator/simulate', data)
+}
+
 export function updateRule(id: number, data: Partial<Rule>): Promise<Rule> {
   return http.put(`/rules/${id}`, data)
 }
