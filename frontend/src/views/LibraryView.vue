@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
 import { useSplitDrag } from '@/composables/useSplitDrag'
+import { useAsideWidth } from '@/composables/useAsideWidth'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   addBusinessFile,
@@ -217,6 +218,7 @@ const previewExt = computed(() => {
 
 // 预览区与编辑区可拖拽调宽
 const { leftRatio, startDrag } = useSplitDrag()
+const { asideWidth, startResize } = useAsideWidth('lib-aside-width', 300, 240, 600)
 
 async function selectDoc(row: DocumentListItem) {
   selectedDoc.value = row
@@ -512,7 +514,7 @@ onMounted(async () => {
     <!-- ============ 主体：左列表 + 右全景详情 ============ -->
     <div class="lib-body2" :class="{ 'lib-body2-mobile': isMobile }">
       <!-- 左：文档列表（点击选中） -->
-      <aside class="lib-list-panel">
+      <aside class="lib-list-panel" :style="isMobile ? undefined : { width: asideWidth + 'px' }">
         <div class="lib-list-label">
           <span>文档列表</span>
           <span class="gray small">点击查看详情</span>
@@ -548,6 +550,7 @@ onMounted(async () => {
           <el-empty v-if="!loading && items.length === 0" description="暂无文档" :image-size="60" />
         </div>
       </aside>
+      <div v-if="!isMobile" class="lib-resizer" @mousedown="startResize" />
 
       <!-- 右：全景详情（大预览 + 窄编辑列） -->
       <main class="lib-main">
@@ -765,8 +768,23 @@ onMounted(async () => {
 }
 
 /* 左：文档列表 */
+.lib-resizer {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  border-radius: 3px;
+  margin: 0 -3px;
+  position: relative;
+  z-index: 5;
+}
+
+.lib-resizer:hover {
+  background: #c6e2ff;
+}
+
 .lib-list-panel {
-  width: 300px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;

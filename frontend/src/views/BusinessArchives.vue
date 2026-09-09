@@ -8,6 +8,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
+import { useAsideWidth } from '@/composables/useAsideWidth'
 import DocumentPreview from '@/components/DocumentPreview.vue'
 import {
   addBusinessFile,
@@ -35,6 +36,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const current = ref<BusinessRecordOut | null>(null)
 const { isMobile } = useMobile()
+const { asideWidth, startResize } = useAsideWidth('ba-aside-width', 340, 240, 640)
 
 const statusOptions = [
   { label: '全部状态', value: '' },
@@ -392,7 +394,7 @@ onMounted(loadList)
 <template>
   <div class="ba-page">
     <!-- ============ 左：档案列表 ============ -->
-    <aside class="ba-side">
+    <aside class="ba-side" :style="isMobile ? undefined : { width: asideWidth + 'px' }">
       <div class="ba-toolbar">
         <el-input
           v-model="keyword"
@@ -447,6 +449,7 @@ onMounted(loadList)
         />
       </div>
     </aside>
+    <div v-if="!isMobile" class="ba-resizer" @mousedown="startResize" />
 
     <!-- ============ 右：档案详情 ============ -->
     <main class="ba-main">
@@ -640,7 +643,6 @@ onMounted(loadList)
 
 /* ---------- 左栏 ---------- */
 .ba-side {
-  width: 340px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -648,6 +650,22 @@ onMounted(loadList)
   border-radius: 8px;
   border: 1px solid #ebeef5;
   overflow: hidden;
+}
+
+.ba-resizer {
+  width: 6px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.15s;
+  border-radius: 3px;
+  margin: 0 -3px;
+  position: relative;
+  z-index: 5;
+}
+
+.ba-resizer:hover {
+  background: #c6e2ff;
 }
 
 .ba-toolbar {
