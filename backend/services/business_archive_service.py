@@ -341,7 +341,9 @@ class BusinessArchiveService:
                     business = rec
                     match_mode = "exact"
                     break
-        if business is None:
+        if business is None and not no_from_filename:
+            # 文件名来源的合同号权威可信（不存在 OCR 识别错），
+            # 跳过模糊匹配暂停，直接精确匹配/新建，避免 YC 系列近号互相拦截
             fstate, candidate = self._find_fuzzy_business(db, contract_no)
             if fstate == "candidate":
                 logger.info(
@@ -612,6 +614,13 @@ class BusinessArchiveService:
         for doc_id in documents:
             stats["scanned"] += 1
             contract_no = _get_field(db, doc_id, _BUSINESS_NO_FIELD)
+            if not contract_no:
+                # 与 auto_link_document 一致：字段缺失时从文件名回退提取
+                # （文件名规则直接归档的合同无字段，但文件名含合同号）
+                doc = db.get(Document, doc_id)
+                contract_no = _extract_no_from_filename(
+                    doc.original_filename if doc else ""
+                )
             if not contract_no:
                 stats["skipped_no_contract"] += 1
                 continue
