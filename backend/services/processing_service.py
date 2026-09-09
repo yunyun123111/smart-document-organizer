@@ -83,23 +83,38 @@ class ProcessingService:
         # 只跳过已定性的文件（人工审核中 / 已归档 / 重复），
         # 避免人工审核中的文件被再次识别（浪费 token/OCR）。
         # pending/processing 是待本次批量处理的文件，必须保留。
+        # 注意：跳过必须「路径 + 内容 hash 双命中」——original_path 只是
+        # 入库时的路径，同名新文件会复用同一路径（如 结算单.pdf 整理后
+        # 再传一份同名不同内容的新文件），仅按路径跳过会误杀新文件。
         if files:
             with SessionLocal() as db:
-                skip = {
-                    r[0]
-                    for r in db.query(Document.original_path)
+                skip_map = {
+                    r[0]: r[1]
+                    for r in db.query(
+                        Document.original_path, Document.file_hash
+                    )
                     .filter(
                         Document.status.in_(
                             (STATUS_NEED_REVIEW, STATUS_ARCHIVED, STATUS_DUPLICATE)
                         )
                     )
                     .all()
-                    if r[0]
+                    if r[0] and r[1]
                 }
-            files = [
-                p for p in files
-                if str(p.resolve()) not in skip and str(p) not in skip
-            ]
+            kept: list[Path] = []
+            for p in files:
+                ps = str(p.resolve())
+                p_raw = str(p)
+                known_hash = skip_map.get(ps) or skip_map.get(p_raw)
+                if known_hash is not None:
+                    # 路径命中：同路径 + 同内容才跳过；同名不同内容是新文件，放行
+                    try:
+                        if sha256_file(p) == known_hash:
+                            continue
+                    except OSError:
+                        continue  # 读不到文件视为异常，交由后续处理
+                kept.append(p)
+            files = kept
 
         return self._launch(files, src)
 
