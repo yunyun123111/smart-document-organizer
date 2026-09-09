@@ -247,18 +247,27 @@ const linkVisible = ref(false)
 const linking = ref(false)
 const docCandidates = ref<DocumentListItem[]>([])
 const selectedDocIds = ref<number[]>([])
+const docLinkKeyword = ref('')
+
+async function loadDocCandidates() {
+  try {
+    const docs = await listDocuments({
+      keyword: docLinkKeyword.value.trim() || undefined,
+      limit: 200,
+    })
+    const linked = new Set(current.value?.files.map((f) => f.document_id) ?? [])
+    docCandidates.value = docs.filter((d) => !linked.has(d.id))
+  } catch {
+    docCandidates.value = []
+  }
+}
 
 async function openLinkDialog() {
   if (!current.value) return
   linkVisible.value = true
   selectedDocIds.value = []
-  try {
-    const docs = await listDocuments({ limit: 200 })
-    const linked = new Set(current.value.files.map((f) => f.document_id))
-    docCandidates.value = docs.filter((d) => !linked.has(d.id))
-  } catch {
-    docCandidates.value = []
-  }
+  docLinkKeyword.value = ''
+  await loadDocCandidates()
 }
 
 function onDocSelect(rows: DocumentListItem[]) {
@@ -559,7 +568,18 @@ onMounted(loadList)
 
     <!-- ============ 关联已有文档 ============ -->
     <el-dialog v-model="linkVisible" title="关联已有文档" width="780px" :append-to-body="true">
-      <el-table :data="docCandidates" height="380" @selection-change="onDocSelect">
+      <div style="margin-bottom: 10px; display: flex; gap: 8px">
+        <el-input
+          v-model="docLinkKeyword"
+          placeholder="搜索文件名 / 合同号 / 类型…"
+          clearable
+          style="width: 340px"
+          @keyup.enter="loadDocCandidates"
+          @clear="loadDocCandidates"
+        />
+        <el-button type="primary" plain @click="loadDocCandidates">搜索</el-button>
+      </div>
+      <el-table :data="docCandidates" height="340" @selection-change="onDocSelect">
         <el-table-column type="selection" width="45" />
         <el-table-column prop="original_filename" label="文件名" min-width="240" show-overflow-tooltip />
         <el-table-column prop="document_type" label="类型" width="110" />

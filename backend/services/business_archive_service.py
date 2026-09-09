@@ -121,6 +121,24 @@ def _is_valid_business_no(no: str) -> bool:
                 return True
     return False
 
+# 文件名合同号正则：SJWLXS（DD）-2026-YC0432 / SJWLCG（DD）-2026-0109 / HSYCXS（DD）-2026-0110
+_FN_CONTRACT_NO_RE = re.compile(
+    r"([A-Z]{2,10}(?:（DD）|\(DD\)|[-_])?[-_/]?\d{4}[-_/]?[A-Z]{0,6}\d{2,})|"
+    r"([A-Z]{2,6}\d{4,})",
+    re.IGNORECASE,
+)
+
+
+def _extract_no_from_filename(filename: str) -> str:
+    """从文件名回退提取合同号（无则空串）。仅返回通过业务号校验的完整编号。"""
+    if not filename:
+        return ""
+    m = _FN_CONTRACT_NO_RE.search(filename)
+    if not m:
+        return ""
+    no = m.group(1) or m.group(2)
+    return no if _is_valid_business_no(no) else ""
+
 
 def _get_field_confidence(db: Session, document_id: int, field_name: str) -> float:
     """读取字段最新一条的置信度，无记录视为 1.0（不阻塞）。"""
@@ -268,6 +286,17 @@ class BusinessArchiveService:
             return None
 
         contract_no = _get_field(db, document_id, _BUSINESS_NO_FIELD)
+        no_from_filename = False
+        if not contract_no:
+            # 文件名回退：SJWLXS（DD）-2026-YC0432.pdf 这类文件名规则直接归档的
+            # 文档没有字段提取，从文件名提取合同号（文件名权威，置信度视为 1.0）
+            contract_no = _extract_no_from_filename(document.original_filename)
+            if contract_no:
+                no_from_filename = True
+                logger.info(
+                    "自动归集：文档 %s 无字段合同号，从文件名提取 %s",
+                    document_id, contract_no,
+                )
         if not contract_no:
             logger.info(
                 "自动归集跳过：文档 %s（%s）无合同号字段",
@@ -283,8 +312,12 @@ class BusinessArchiveService:
             )
             return None
 
-        # 2) 低置信度：手写/OCR 识别不清 → 不自动归集，留待人工确认
-        conf = _get_field_confidence(db, document_id, _BUSINESS_NO_FIELD)
+        # 2) 低置信度：手写/OCR 识别不清 → 不自动归集，留待人工确认（文件名来源视为可信）
+        conf = (
+            1.0
+            if no_from_filename
+            else _get_field_confidence(db, document_id, _BUSINESS_NO_FIELD)
+        )
         if conf < _CONFIDENCE_THRESHOLD:
             logger.info(
                 "自动归集跳过：文档 %s 合同号 %r 置信度 %.2f 过低，待人工确认归集",
@@ -292,15 +325,22 @@ class BusinessArchiveService:
             )
             return None
 
-        # 3) 匹配档案：归一化精确 → 唯一高相似候选（模糊）→ 无匹配
+        # 3) 匹配档案：索引精确 → 归一化精确 → 唯一高相似候选（模糊）→ 无匹配
         norm = _normalize_no(contract_no)
         business = None
         match_mode = "none"
-        for rec in db.execute(select(BusinessRecord)).scalars():
-            if _normalize_no(rec.business_no) == norm:
-                business = rec
-                match_mode = "exact"
-                break
+        # 快路径：business_no 唯一索引直接命中（绝大多数场景，避免全表扫）
+        business = self.get_business_by_no(db, contract_no)
+        if business is not None:
+            match_mode = "exact"
+        else:
+            # 慢路径：仅在索引未命中时全表归一化比对（容忍手写格式差异）。
+            # ponytail: 全表扫只发生在未命中时；档案数千条后若慢，可加前缀过滤。
+            for rec in db.execute(select(BusinessRecord)).scalars():
+                if _normalize_no(rec.business_no) == norm:
+                    business = rec
+                    match_mode = "exact"
+                    break
         if business is None:
             fstate, candidate = self._find_fuzzy_business(db, contract_no)
             if fstate == "candidate":
