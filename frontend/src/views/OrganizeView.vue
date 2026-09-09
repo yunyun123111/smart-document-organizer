@@ -44,7 +44,13 @@ async function handleUpload(f: File) {
   try {
     const res = await uploadDocument(f)
     if (res.status === 'duplicate') {
-      ElMessage.warning(`「${res.filename}」已在库中（重复）`)
+      const src = (res as any).duplicate_of
+      const st = (res as any).duplicate_status
+      ElMessage.warning(
+        src
+          ? `「${res.filename}」已在库中（重复）——与「${src}」（${st === 'archived' ? '已归档' : st}）内容相同`
+          : `「${res.filename}」已在库中（重复）`,
+      )
     } else {
       ElMessage.success(`「${res.filename}」已上传待整理`)
     }

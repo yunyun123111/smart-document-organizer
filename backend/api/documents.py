@@ -501,7 +501,17 @@ async def upload_document(
     existing = db.query(Document).filter(Document.file_hash == file_hash).first()
     if existing is not None:
         target.unlink(missing_ok=True)
-        return UploadResponse(document_id=existing.id, filename=file.filename, status="duplicate")
+        return UploadResponse(
+            document_id=existing.id,
+            filename=file.filename,
+            status="duplicate",
+            duplicate_of=existing.original_filename,
+            duplicate_status=existing.status,
+            duplicate_time=(
+                str(existing.processed_at or existing.created_at)
+                if (existing.processed_at or existing.created_at) else None
+            ),
+        )
 
     doc = Document(
         original_filename=target.name,

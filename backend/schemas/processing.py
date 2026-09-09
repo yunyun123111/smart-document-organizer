@@ -32,3 +32,6 @@ class UploadResponse(BaseModel):
     document_id: int
     filename: str
     status: str
+    duplicate_of: Optional[str] = None  # 重复来源：库里同内容文档的文件名
+    duplicate_status: Optional[str] = None  # 重复来源的状态（archived/recycled/...）
+    duplicate_time: Optional[str] = None  # 重复来源的归档/创建时间
