@@ -918,6 +918,10 @@ export function removeBusinessFile(id: number, documentId: number): Promise<{ ok
   return http.delete(`/business-archives/${id}/files/${documentId}`)
 }
 
+export function dissolveBusinessArchive(id: number): Promise<{ ok: boolean; unlinked_documents: number; message?: string }> {
+  return http.delete(`/business-archives/${id}`)
+}
+
 export function backfillBusinessArchives(): Promise<BackfillResp> {
   return http.post('/business-archives/backfill')
 }

@@ -292,6 +292,29 @@ def remove_file_from_business(business_id: int, document_id: int, db: Session = 
     return {"ok": True, "business_id": business_id, "document_id": document_id}
 
 
+# ---------------- 解散档案 ----------------
+
+
+@router.delete("/{business_id}")
+def dissolve_business_archive(business_id: int, db: Session = Depends(get_db)):
+    """解散档案：删除档案及全部关联（business_files），文档本身保留在文档库。"""
+    record = _get_or_404(db, business_id)
+    try:
+        unlinked = _service.dissolve_business(db, business_id)
+    except BusinessArchiveError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    logger.info(
+        "解散档案: id=%s business_no=%s 解绑=%d", business_id, record.business_no, unlinked
+    )
+    return {
+        "ok": True,
+        "business_id": business_id,
+        "business_no": record.business_no,
+        "unlinked_documents": unlinked,
+        "message": f"档案 {record.business_no} 已解散，文档保留在文档库",
+    }
+
+
 # ---------------- 历史回填 ----------------
 
 

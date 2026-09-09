@@ -46,6 +46,7 @@ from backend.models import (
     OP_BUSINESS_AUTO_LINK,
     OP_BUSINESS_MANUAL_LINK,
     OP_BUSINESS_UNLINK,
+    OP_BUSINESS_DISSOLVE,
     RESULT_FAILED,
     RESULT_OK,
     BusinessFile,
@@ -575,6 +576,51 @@ class BusinessArchiveService:
                 error_message=str(exc)[:500],
             )
             return False
+
+    # ---------- 3.5 解散档案 ----------
+
+    def dissolve_business(self, db: Session, business_id: int) -> int:
+        """解散档案：删除该档案及全部关联（business_files），文档本身保留。
+
+        返回：被解散的关联文件数。档案不存在抛 BusinessArchiveError。
+        """
+        business = self.get_business(db, business_id)
+        if business is None:
+            raise BusinessArchiveError(f"业务档案不存在 business_id={business_id}")
+        links = list(
+            db.execute(
+                select(BusinessFile).where(BusinessFile.business_id == business_id)
+            ).scalars()
+        )
+        try:
+            for link in links:
+                db.delete(link)
+            db.delete(business)
+            db.commit()
+            log_operation(
+                db,
+                OP_BUSINESS_DISSOLVE,
+                old_path=f"business_no={business.business_no}",
+                new_path="",
+                result=RESULT_OK,
+            )
+            logger.info(
+                "解散档案完成：%s（id=%s），解绑 %d 份文档",
+                business.business_no, business_id, len(links),
+            )
+            return len(links)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.exception("解散档案失败：business_id=%s: %s", business_id, exc)
+            log_operation(
+                db,
+                OP_BUSINESS_DISSOLVE,
+                old_path=f"business_id={business_id}",
+                new_path="",
+                result=RESULT_FAILED,
+                error_message=str(exc)[:500],
+            )
+            raise BusinessArchiveError(f"解散档案失败：{exc}") from exc
 
     # ---------- 4. 历史数据回填 ----------
 

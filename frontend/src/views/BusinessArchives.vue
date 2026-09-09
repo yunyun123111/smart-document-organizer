@@ -17,6 +17,7 @@ import {
   listBusinessArchives,
   listDocuments,
   removeBusinessFile,
+  dissolveBusinessArchive,
   updateBusinessArchive,
   type BusinessArchiveCreate,
   type BusinessFileOut,
@@ -333,6 +334,29 @@ async function changeStatus(status: string) {
   }
 }
 
+// ---------------- 解散档案 ----------------
+async function dissolve() {
+  if (!current.value) return
+  const b = current.value
+  try {
+    await ElMessageBox.confirm(
+      `确定解散档案「${b.business_no}」吗？\n\n解散后：档案及其 ${b.file_count} 份单据的关联关系将全部解除，\n文档本身保留在文档库，不会被删除。\n此操作不可恢复。`,
+      '解散档案',
+      { type: 'warning', confirmButtonText: '解散档案', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' },
+    )
+  } catch {
+    return
+  }
+  try {
+    const res = await dissolveBusinessArchive(b.id)
+    ElMessage.success(res.message || '档案已解散')
+    current.value = null
+    await loadList()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
 // ---------------- 回溯归集 ----------------
 const backfilling = ref(false)
 
@@ -450,6 +474,7 @@ onMounted(loadList)
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
+            <el-button size="small" type="danger" plain @click="dissolve">解散档案</el-button>
           </div>
         </div>
 
