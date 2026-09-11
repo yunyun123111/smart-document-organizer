@@ -78,6 +78,19 @@ from backend.models.business_archive import (
 from backend.models.recycle_bin import RecycleBinItem
 from backend.models.excel_source import ExcelSource, ExcelSheetConfig
 from backend.models.rule import ALL_MATCH_TYPES, MATCH_CONTAINS, MATCH_EXACT, MATCH_REGEX, Rule
+from backend.models.document_fingerprint import DocumentFingerprint
+from backend.models.dossier_anomaly import (
+    ALL_ANOMALY_TYPES,
+    ALL_SEVERITIES,
+    ANOMALY_AMOUNT_MISMATCH,
+    ANOMALY_DATE_CONFLICT,
+    ANOMALY_MISSING_DOC,
+    ANOMALY_QUANTITY_DEVIATION,
+    DossierAnomaly,
+    SEVERITY_CRITICAL,
+    SEVERITY_INFO,
+    SEVERITY_WARNING,
+)
 
 __all__ = [
     "Base",
@@ -156,4 +169,15 @@ __all__ = [
     "MATCH_CONTAINS",
     "MATCH_EXACT",
     "MATCH_REGEX",
+    "DocumentFingerprint",
+    "DossierAnomaly",
+    "ALL_ANOMALY_TYPES",
+    "ANOMALY_MISSING_DOC",
+    "ANOMALY_AMOUNT_MISMATCH",
+    "ANOMALY_DATE_CONFLICT",
+    "ANOMALY_QUANTITY_DEVIATION",
+    "ALL_SEVERITIES",
+    "SEVERITY_INFO",
+    "SEVERITY_WARNING",
+    "SEVERITY_CRITICAL",
 ]

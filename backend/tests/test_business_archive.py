@@ -31,7 +31,8 @@ class TestMigrationV4:
     """迁移函数：建表 / 索引 / 幂等 / 迁移记录。"""
 
     def test_schema_version_is_4(self):
-        assert SCHEMA_VERSION == 4
+        # 业务档案迁移（v4）已纳入版本体系；当前最新版本 5，用 >= 4 保证该迁移始终被包含
+        assert SCHEMA_VERSION >= 4
 
     def test_migration_creates_tables_and_indexes(self, db):
         _migrate_create_business_archive(db)

@@ -269,7 +269,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 迁移列表：[(version, name, upgrade_fn)]
 # upgrade_fn(db: Session) -> None，须幂等。
@@ -360,10 +360,52 @@ def _migrate_create_business_archive(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_fingerprints_and_anomalies(db: Session) -> None:
+    """V5: 新增 document_fingerprints（文档指纹）+ dossier_anomalies（业务异常）表。幂等。
+
+    文档指纹表：版面布局哈希 + 结构关键词 SimHash，支撑同类文件自动聚类免审；
+    业务异常表：V2.5 异常检测的落库表（缺失单据/金额不符/日期冲突/数量偏差）。
+    """
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS document_fingerprints ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "document_id INTEGER NOT NULL UNIQUE, "
+        "layout_hash VARCHAR(64) NOT NULL, "
+        "text_simhash VARCHAR(64) NOT NULL, "
+        "feature_meta TEXT NOT NULL DEFAULT '{}', "
+        "matched_template_id INTEGER, "
+        "created_at DATETIME NOT NULL, "
+        "FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE CASCADE, "
+        "FOREIGN KEY (matched_template_id) REFERENCES recognition_templates (id) ON DELETE SET NULL)"
+    ))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_fingerprints_layout ON document_fingerprints (layout_hash)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_fingerprints_simhash ON document_fingerprints (text_simhash)"))
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS dossier_anomalies ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "business_id INTEGER NOT NULL, "
+        "anomaly_type VARCHAR(32) NOT NULL, "
+        "severity VARCHAR(16) NOT NULL DEFAULT 'WARNING', "
+        "title VARCHAR(128) NOT NULL, "
+        "description TEXT NOT NULL DEFAULT '', "
+        "related_document_ids TEXT NOT NULL DEFAULT '[]', "
+        "is_resolved BOOLEAN NOT NULL DEFAULT 0, "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL, "
+        "FOREIGN KEY (business_id) REFERENCES business_records (id) ON DELETE CASCADE)"
+    ))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_anomalies_business_id ON dossier_anomalies (business_id)"))
+    db.execute(text("CREATE INDEX IF NOT EXISTS ix_anomalies_resolved ON dossier_anomalies (is_resolved)"))
+    _ensure_schema_migrations(db)
+    _record_migration(db, 5, "create fingerprints and anomalies")
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
     (3, "create excel_sources", _migrate_create_excel_sources),
     (4, "create business_archive", _migrate_create_business_archive),
+    (5, "create fingerprints and anomalies", _migrate_create_fingerprints_and_anomalies),
 ]
 
 
@@ -421,6 +463,11 @@ def run_migrations(db: Session) -> None:
             base = SCHEMA_VERSION - 1
             _record_migration(db, 0, "legacy baseline")
             logger.info("数据库迁移：检测到既有库，标记 legacy baseline=%d", base)
+            # 持久化记录逻辑已应用的历史迁移：仅靠内存 applied 集合跳过的话，
+            # 下次运行会因记录缺失而重复执行历史迁移（幂等被破坏）
+            for v, name, _ in MIGRATIONS:
+                if v <= base:
+                    _record_migration(db, v, name)
         else:
             base = SCHEMA_VERSION
             _record_migration(db, 0, "fresh baseline")
