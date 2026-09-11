@@ -9,13 +9,13 @@
 设计要点：
 - business_id 外键 → business_records ON DELETE CASCADE
 - severity 分级：INFO / WARNING / CRITICAL
-- related_document_ids 存 JSON 文本（关联异常单据 ID 列表）
+- related_document_ids 用 JSON 类型存关联异常单据 ID 列表
 - is_resolved 支持人工忽略/解决（异常中心可手动关闭提醒）
 """
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.models.base import Base, TimestampMixin
 
@@ -63,9 +63,13 @@ class DossierAnomaly(Base, TimestampMixin):
     )
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # 关联异常单据 ID 列表（JSON 文本，如 [12, 34]）
-    related_document_ids: Mapped[str] = mapped_column(
-        Text, nullable=False, default="[]"
+    # 关联异常单据 ID 列表（JSON，如 [12, 34]）
+    related_document_ids: Mapped[list[int]] = mapped_column(
+        JSON, nullable=False, default=list
     )
     # 是否已人工忽略/解决
-    is_resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    is_resolved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+
+    business_record: Mapped["BusinessRecord"] = relationship(backref="anomalies")

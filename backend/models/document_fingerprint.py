@@ -6,17 +6,18 @@
 - 疑似重复检测（内容相同但文件名不同）
 
 设计要点：
-- document_id 唯一：一份文档一条指纹（UNIQUE）
+- document_id 唯一：一份文档一条指纹（UNIQUE + 索引）
 - layout_hash 版面坐标密度哈希 + text_simhash 结构关键词 64 位哈希，双索引
-- feature_meta 存 JSON 文本（文本块数、表格数、宽高比等补充特征）
+- feature_meta 用 JSON 类型存补充特征（文本块数、表格数、宽高比等）
 - matched_template_id 可选外键 → recognition_templates，ON DELETE SET NULL
 """
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, backref, mapped_column, relationship
 
 from backend.models.base import Base
 
@@ -33,13 +34,16 @@ class DocumentFingerprint(Base):
         ForeignKey("documents.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
+        index=True,
     )
     # 版面坐标密度哈希（布局指纹）
     layout_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 结构关键词 SimHash（64 位）
     text_simhash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    # 补充特征元数据（JSON 文本：文本块数、表格数、宽高比等）
-    feature_meta: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    # 补充特征元数据（JSON：文本块数、表格数、宽高比等）
+    feature_meta: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
     # 绑定的识别模板 ID（可选，命中模板后回填；模板删除时置空）
     matched_template_id: Mapped[int | None] = mapped_column(
         Integer,
@@ -48,4 +52,9 @@ class DocumentFingerprint(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
+    )
+
+    # document_id 唯一 → 与 Document 是一对一（backref 侧显式 uselist=False）
+    document: Mapped["Document"] = relationship(
+        backref=backref("fingerprint", uselist=False)
     )
