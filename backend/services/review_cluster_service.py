@@ -33,7 +33,7 @@ from backend.services.fingerprint_service import FingerprintService
 from backend.utils.logger import get_logger
 
 # 复用人工审核流程的既有实现（渲染建议名 / 字段落库 / 模板学习），避免逻辑漂移
-from backend.api.review import (
+from backend.services.review_support import (
     _fields_dict,
     _learn_template,
     _render_suggestion,
