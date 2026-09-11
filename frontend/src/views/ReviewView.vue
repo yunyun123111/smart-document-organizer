@@ -13,9 +13,18 @@ import {
   type ReviewDetail,
 } from '@/api'
 import DocumentPreview from '@/components/DocumentPreview.vue'
+import {
+  batchConfirmCluster,
+  getReviewClusters,
+  type ReviewCluster,
+} from '@/api/review'
 
 const docs = ref<DocumentListItem[]>([])
 const loading = ref(false)
+// 聚类模式：按文档指纹分组，一次审核全组应用
+const viewMode = ref<'cluster' | 'flat'>('cluster')
+const clusters = ref<ReviewCluster[]>([])
+const clusterLoading = ref(false)
 const detail = ref<ReviewDetail | null>(null)
 const saving = ref(false)
 const selectedIds = ref<number[]>([])
@@ -185,7 +194,66 @@ function fmtSize(n: number): string {
   return n + ' B'
 }
 
-onMounted(load)
+async function loadData() {
+  if (viewMode.value === 'cluster') {
+    clusterLoading.value = true
+    try {
+      clusters.value = await getReviewClusters()
+    } finally {
+      clusterLoading.value = false
+    }
+  } else {
+    await load()
+  }
+}
+
+// 审核基准件：复用右侧分屏预览与字段核对
+function openInspect(cluster: ReviewCluster) {
+  open(cluster.representative_doc.id)
+}
+
+// 一键批处理：以基准文档分类批量归档整组同指纹单据
+async function handleQuickBatchConfirm(cluster: ReviewCluster) {
+  const categoryPath = cluster.representative_doc.suggested_category
+  if (!categoryPath) {
+    ElMessage.warning('基准文档尚未识别出分类，请先点击【审核基准件】指定分类')
+    return
+  }
+  const targetIds = cluster.documents.map((d) => d.id)
+  try {
+    await ElMessageBox.confirm(
+      `确认将该组 ${cluster.count} 张单据全部按【${cluster.representative_doc.filename}】的规则与分类归档？`,
+      '智能批量免审',
+      { confirmButtonText: '立即归档', cancelButtonText: '取消', type: 'info' },
+    )
+  } catch {
+    return
+  }
+  saving.value = true
+  try {
+    const res = await batchConfirmCluster({
+      base_document_id: cluster.representative_doc.id,
+      target_document_ids: targetIds,
+      category_path: categoryPath,
+      save_as_sample: true,
+    })
+    const data = res.data
+    if (data.failed_count === 0) {
+      ElMessage.success(`成功归档 ${data.success_count} 张单据！`)
+    } else {
+      ElMessage.warning(`归档成功 ${data.success_count} 张，失败 ${data.failed_count} 张`)
+    }
+    if (currentId.value && targetIds.includes(currentId.value)) {
+      currentId.value = null
+      detail.value = null
+    }
+    await loadData()
+  } finally {
+    saving.value = false
+  }
+}
+
+onMounted(loadData)
 </script>
 
 <template>
@@ -198,11 +266,56 @@ onMounted(load)
           <el-tag v-if="totalCount" size="small" type="warning">{{ totalCount }} 份</el-tag>
         </div>
         <div class="rv-head-actions">
-          <el-button size="small" @click="load">刷新</el-button>
+          <el-radio-group v-model="viewMode" size="small" @change="loadData">
+            <el-radio-button label="cluster">聚类批处理</el-radio-button>
+            <el-radio-button label="flat">常规平铺</el-radio-button>
+          </el-radio-group>
+          <el-button size="small" @click="loadData">刷新</el-button>
         </div>
       </div>
 
-      <!-- 批量操作栏 -->
+      <!-- 聚类模式：同指纹单据折叠卡片 + 一键批处理 -->
+      <div v-if="viewMode === 'cluster'" v-loading="clusterLoading" class="cluster-list">
+        <el-empty v-if="!clusterLoading && clusters.length === 0" description="暂无待审核单据" />
+        <el-card
+          v-for="cluster in clusters"
+          :key="cluster.cluster_id"
+          class="cluster-card"
+          shadow="hover"
+        >
+          <div class="cluster-card-header">
+            <div class="title-area">
+              <el-tag type="success" effect="dark" size="small">
+                同格式单据 {{ cluster.count }} 张
+              </el-tag>
+              <span class="sample-name">基准文档: {{ cluster.representative_doc.filename }}</span>
+            </div>
+            <div class="action-area">
+              <el-button type="primary" size="small" @click="openInspect(cluster)">
+                审核基准件
+              </el-button>
+              <el-button
+                type="success"
+                size="small"
+                :disabled="cluster.count <= 1"
+                @click="handleQuickBatchConfirm(cluster)"
+              >以当前标准批量归档（{{ cluster.count }} 张）</el-button>
+            </div>
+          </div>
+          <el-collapse class="cluster-files-collapse">
+            <el-collapse-item title="查看该组包含的所有单据文件名">
+              <ul class="file-list">
+                <li v-for="d in cluster.documents" :key="d.id">
+                  <el-icon><Document /></el-icon> {{ d.filename }}
+                </li>
+              </ul>
+            </el-collapse-item>
+          </el-collapse>
+        </el-card>
+      </div>
+
+      <!-- 平铺模式：批量操作栏 -->
+      <template v-else>
       <div class="rv-toolbar">
         <el-checkbox :model-value="isAllSelected" :indeterminate="selectedCount > 0 && !isAllSelected" @change="toggleAll">
           全选
@@ -260,6 +373,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="created_at" label="时间" width="160" />
       </el-table>
+      </template>
     </main>
 
     <!-- ============ 右：页面内嵌审核分屏（左预览 + 右核对修改） ============ -->
@@ -549,5 +663,50 @@ onMounted(load)
   .splitter {
     display: none;
   }
+}
+
+/* ===== 聚类批处理模式 ===== */
+.cluster-list {
+  overflow-y: auto;
+  height: calc(100% - 56px);
+  padding-right: 4px;
+}
+.cluster-card {
+  margin-bottom: 12px;
+}
+.cluster-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.title-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sample-name {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+}
+.action-area {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cluster-files-collapse {
+  margin-top: 10px;
+}
+.file-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+.file-list li {
+  padding: 2px 0;
 }
 </style>
