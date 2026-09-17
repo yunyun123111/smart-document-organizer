@@ -214,6 +214,18 @@ onUnmounted(stopPoll)
 </script>
 
 <template>
+  <el-card shadow="never" class="mb16">
+    <template #header>
+      <span>使用提示</span>
+    </template>
+    <el-steps direction="vertical" :active="4">
+      <el-step title="放入文件" description="把杂乱文件拖入「待整理目录」，或在「文件整理」页上传" />
+      <el-step title="智能整理" description="系统自动识别类型、提取字段、计算置信度" />
+      <el-step title="人工确认" description="置信度不足的文件进入「待人工确认」列表" />
+      <el-step title="归档完成" description="确认后按「分类/年/月」自动归档，支持随时撤销" />
+    </el-steps>
+  </el-card>
+
   <el-card shadow="never">
     <template #header>
       <div class="card-head">
@@ -224,13 +236,6 @@ onUnmounted(stopPoll)
         </el-button>
       </div>
     </template>
-
-    <el-alert
-      title="把需要整理的文件放入「待整理目录」或直接上传，系统会自动识别、分类并归档；置信度不足的会进入人工确认。"
-      type="info"
-      :closable="false"
-      class="mb16"
-    />
 
     <div class="upload-area">
       <el-upload

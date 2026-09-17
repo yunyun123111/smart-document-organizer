@@ -343,17 +343,7 @@ function restoreAlerts() {
       </el-col>
     </el-row>
 
-    <el-card shadow="never" class="section">
-      <template #header>
-        <span>使用提示</span>
-      </template>
-      <el-steps direction="vertical" :active="4">
-        <el-step title="放入文件" description="把杂乱文件拖入「待整理目录」，或在「文件整理」页上传" />
-        <el-step title="智能整理" description="系统自动识别类型、提取字段、计算置信度" />
-        <el-step title="人工确认" description="置信度不足的文件进入「待人工确认」列表" />
-        <el-step title="归档完成" description="确认后按「分类/年/月」自动归档，支持随时撤销" />
-      </el-steps>
-    </el-card>
+
   </div>
 
   <!-- 类型文件抽屉：点击类型分布直接看该类型文件 -->
