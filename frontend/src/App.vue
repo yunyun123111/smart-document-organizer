@@ -223,8 +223,15 @@ onBeforeUnmount(() => {
 .menu :deep(.el-sub-menu__title:hover) {
   color: #fff;
 }
+.menu :deep(.el-menu--inline) {
+  background-color: transparent;
+}
 .menu :deep(.el-menu-item) {
   color: rgba(255, 255, 255, 0.75);
+}
+.menu :deep(.el-menu-item:hover) {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 .menu :deep(.el-menu-item.is-active) {
   color: #fff;
@@ -278,6 +285,9 @@ onBeforeUnmount(() => {
 }
 .mobile-drawer .el-menu {
   border-right: none;
+  background-color: transparent;
+}
+.mobile-drawer .el-menu--inline {
   background-color: transparent;
 }
 .mobile-drawer .el-sub-menu__title {
