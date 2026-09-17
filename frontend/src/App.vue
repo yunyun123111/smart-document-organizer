@@ -102,7 +102,7 @@ onBeforeUnmount(() => {
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="lib-group">
-          <template #title>文档库</template>
+          <template #title>文件库</template>
           <el-menu-item index="/library"><span>文档库</span></el-menu-item>
           <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
           <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
@@ -146,7 +146,7 @@ onBeforeUnmount(() => {
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="lib-group">
-          <template #title>文档库</template>
+          <template #title>文件库</template>
           <el-menu-item index="/library"><span>文档库</span></el-menu-item>
           <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
           <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
