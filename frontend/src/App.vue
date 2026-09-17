@@ -90,21 +90,25 @@ onBeforeUnmount(() => {
         :default-openeds="['doc-group', 'data-group', 'lib-group', 'sys-group']"
         class="menu"
       >
-        <el-sub-menu index="doc-group" title="文档处理">
+        <el-sub-menu index="doc-group">
+          <template #title>文档处理</template>
           <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
           <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
           <el-menu-item index="/memories"><span>自动归档</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="data-group" title="数据与分析">
+        <el-sub-menu index="data-group">
+          <template #title>数据与分析</template>
           <el-menu-item index="/"><span>数据看板</span></el-menu-item>
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="lib-group" title="文档库">
+        <el-sub-menu index="lib-group">
+          <template #title>文档库</template>
           <el-menu-item index="/library"><span>文档库</span></el-menu-item>
           <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
           <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="sys-group" title="系统">
+        <el-sub-menu index="sys-group">
+          <template #title>系统</template>
           <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
           <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
         </el-sub-menu>
@@ -130,21 +134,25 @@ onBeforeUnmount(() => {
         class="menu"
         @select="onMenuSelect"
       >
-        <el-sub-menu index="doc-group" title="文档处理">
+        <el-sub-menu index="doc-group">
+          <template #title>文档处理</template>
           <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
           <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
           <el-menu-item index="/memories"><span>自动归档</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="data-group" title="数据与分析">
+        <el-sub-menu index="data-group">
+          <template #title>数据与分析</template>
           <el-menu-item index="/"><span>数据看板</span></el-menu-item>
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="lib-group" title="文档库">
+        <el-sub-menu index="lib-group">
+          <template #title>文档库</template>
           <el-menu-item index="/library"><span>文档库</span></el-menu-item>
           <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
           <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
         </el-sub-menu>
-        <el-sub-menu index="sys-group" title="系统">
+        <el-sub-menu index="sys-group">
+          <template #title>系统</template>
           <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
           <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
         </el-sub-menu>
