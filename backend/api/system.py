@@ -1,7 +1,7 @@
 """系统 API：健康检查、基础信息、Dashboard 统计。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -115,9 +115,12 @@ def dashboard_stats(db: Session = Depends(get_db)):
 
 
 @router.get("/dashboard/trends")
-def dashboard_trends(db: Session = Depends(get_db)):
-    """Dashboard 趋势：每日新增/识别成功率/OCR 失败率 + 异常提醒。"""
-    return get_dashboard_trends(db)
+def dashboard_trends(days: int = Query(14, ge=7, le=30), db: Session = Depends(get_db)):
+    """Dashboard 趋势：每日新增/识别成功率/OCR 失败率 + 异常提醒。
+
+    days: 时间范围（7/14/30 天），前端趋势图切换用。
+    """
+    return get_dashboard_trends(db, days=days)
 
 
 @router.get("/config-check")

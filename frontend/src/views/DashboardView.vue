@@ -18,6 +18,10 @@ const stats = ref<DashboardStats | null>(null)
 const trends = ref<DashboardTrends | null>(null)
 const loading = ref(false)
 
+// 趋势图：时间范围（7/14/30 天）+ 对比模式
+const trendDays = ref(14)
+const compareMode = ref(false)
+
 // 类型抽屉：点击类型分布直接看该类型文件
 const typeDrawer = ref(false)
 const typeDrawerTitle = ref('')
@@ -76,16 +80,19 @@ function fmtSize(n: number): string {
   return n + ' B'
 }
 
+// ---------- 图表 ----------
 const trendChartRef = ref<HTMLDivElement>()
 const rateChartRef = ref<HTMLDivElement>()
+const typePieRef = ref<HTMLDivElement>()
 let trendChart: echarts.ECharts | null = null
 let rateChart: echarts.ECharts | null = null
+let typePieChart: echarts.ECharts | null = null
 
 async function load() {
   loading.value = true
   try {
     stats.value = await getDashboardStats()
-    trends.value = await getDashboardTrends()
+    trends.value = await getDashboardTrends(trendDays.value)
     await nextTick()
     renderCharts()
   } finally {
@@ -93,10 +100,15 @@ async function load() {
   }
 }
 
+function onDaysChange() {
+  load()
+}
+
 function renderCharts() {
   if (!trends.value) return
   renderTrendChart()
   renderRateChart()
+  renderTypePie()
 }
 
 function renderTrendChart() {
@@ -105,19 +117,37 @@ function renderTrendChart() {
   trendChart = echarts.init(trendChartRef.value)
   const d = trends.value!.daily
   const dates = d.map((x) => x.date.slice(5))
+  const ocrFail =
+    trends.value!.ocr_daily.map((x) =>
+      x.fail_rate == null ? null : +(x.fail_rate * 100).toFixed(1),
+    )
+  const series: any[] = [
+    { name: '新增', type: 'line', data: d.map((x) => x.new), itemStyle: { color: '#409eff' }, smooth: true, symbol: 'circle', symbolSize: 6, z: 3 },
+    { name: '归档', type: 'bar', stack: 'total', data: d.map((x) => x.archived), itemStyle: { color: '#67c23a' }, barWidth: 18 },
+    { name: '待确认', type: 'bar', stack: 'total', data: d.map((x) => x.need_review), itemStyle: { color: '#e6a23c' } },
+    { name: '失败', type: 'bar', stack: 'total', data: d.map((x) => x.failed), itemStyle: { color: '#f56c6c' } },
+  ]
+  const yAxes: any[] = [{ type: 'value', minInterval: 1 }]
+  if (compareMode.value) {
+    series.push({
+      name: 'OCR 失败率', type: 'line', yAxisIndex: 1, smooth: true, connectNulls: true,
+      data: ocrFail, itemStyle: { color: '#f56c6c', type: 'dashed' }, symbol: 'diamond', symbolSize: 5,
+    })
+    yAxes.push({
+      type: 'value', max: 100, splitLine: { show: false },
+      axisLabel: { formatter: '{value}%' },
+    })
+  }
   trendChart.setOption({
-    tooltip: { trigger: 'axis' },
+    tooltip: {
+      trigger: 'axis',
+      valueFormatter: (v: any) => (v == null ? '—' : `${v}${typeof v === 'number' && v > 100 ? '' : ' 份'}`),
+    },
     legend: { orient: 'vertical', right: 8, top: 'middle' },
-    grid: { left: 40, right: 96, top: 30, bottom: 28 },
+    grid: { left: 44, right: compareMode.value ? 60 : 96, top: 30, bottom: 28 },
     xAxis: { type: 'category', data: dates },
-    yAxis: { type: 'value', minInterval: 1 },
-    series: [
-      // 堆叠柱：柱高 = 当日新增总量；新增折线叠加显示总量趋势
-      { name: '新增', type: 'line', data: d.map((x) => x.new), itemStyle: { color: '#409eff' }, smooth: true, symbol: 'circle', symbolSize: 6 },
-      { name: '归档', type: 'bar', stack: 'total', data: d.map((x) => x.archived), itemStyle: { color: '#67c23a' }, barWidth: 20 },
-      { name: '待确认', type: 'bar', stack: 'total', data: d.map((x) => x.need_review), itemStyle: { color: '#e6a23c' } },
-      { name: '失败', type: 'bar', stack: 'total', data: d.map((x) => x.failed), itemStyle: { color: '#f56c6c' } },
-    ],
+    yAxis: yAxes,
+    series,
   })
 }
 
@@ -133,7 +163,7 @@ function renderRateChart() {
   rateChart.setOption({
     tooltip: { trigger: 'axis', valueFormatter: (v: any) => (v == null ? '—' : v + '%') },
     legend: { orient: 'vertical', right: 8, top: 'middle' },
-    grid: { left: 40, right: 96, top: 30, bottom: 28 },
+    grid: { left: 44, right: 96, top: 30, bottom: 28 },
     xAxis: { type: 'category', data: dates },
     yAxis: { type: 'value', axisLabel: { formatter: '{value}%' }, max: 100 },
     series: [
@@ -158,9 +188,59 @@ function renderRateChart() {
   })
 }
 
+// ---------- 文件类型分布：统一颜色规范 + 饼图 ----------
+const TYPE_COLOR_MAP: Record<string, string> = {
+  '发票': '#f56c6c',
+  '销售合同': '#409eff',
+  '采购合同': '#409eff',
+  '合同': '#409eff',
+  '结算单': '#e6a23c',
+  '出货单': '#67c23a',
+  '入库单': '#9c27b0',
+  '报价单': '#00bcd4',
+  '订单': '#ff9800',
+  '收付款凭证': '#795548',
+  '银行回单': '#607d8b',
+  '对账单': '#8bc34a',
+}
+const TYPE_PALETTE = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#9c27b0', '#00bcd4', '#ff9800', '#795548', '#607d8b', '#8bc34a']
+function typeColor(t: string, i: number) {
+  return TYPE_COLOR_MAP[t] ?? TYPE_PALETTE[i % TYPE_PALETTE.length]
+}
+
+function renderTypePie() {
+  if (!typePieRef.value) return
+  typePieChart?.dispose()
+  typePieChart = echarts.init(typePieRef.value)
+  const counts = stats.value?.type_counts ?? []
+  if (counts.length === 0) return
+  const data = counts.map((t, i) => ({
+    name: t.type, value: t.count, itemStyle: { color: typeColor(t.type, i) },
+  }))
+  typePieChart.setOption({
+    tooltip: { trigger: 'item', formatter: '{b}<br/>{c} 份（{d}%）' },
+    legend: { orient: 'vertical', right: 8, top: 'middle', type: 'scroll', itemWidth: 10, itemHeight: 10 },
+    series: [
+      {
+        name: '文件类型分布',
+        type: 'pie',
+        radius: ['42%', '68%'],
+        center: ['40%', '50%'],
+        avoidLabelOverlap: true,
+        itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
+        label: { show: true, formatter: '{b}\n{c}份', fontSize: 11 },
+        emphasis: { label: { show: true, fontWeight: 700, fontSize: 13 } },
+        data,
+      },
+    ],
+  })
+  typePieChart.on('click', (p: any) => { void openTypeDocs(p.name) })
+}
+
 function onResize() {
   trendChart?.resize()
   rateChart?.resize()
+  typePieChart?.resize()
 }
 
 onMounted(() => {
@@ -173,8 +253,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
   trendChart?.dispose()
   rateChart?.dispose()
+  typePieChart?.dispose()
 })
 
+// ---------- 统计卡片 ----------
 const cards = [
   { key: 'total_documents', label: '文档总数', color: '#409eff', icon: '📄', to: '/library' },
   { key: 'total_archived', label: '已归档', color: '#67c23a', icon: '📁', to: '/library?status=archived' },
@@ -184,11 +266,6 @@ const cards = [
 
 function go(to: string) {
   router.push(to)
-}
-
-const typeColors = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9c27b0', '#00bcd4', '#ff9800', '#795548']
-function typeColor(i: number) {
-  return typeColors[i % typeColors.length]
 }
 
 function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
@@ -255,10 +332,19 @@ function restoreAlerts() {
       <div v-if="visibleAlerts().length === 0" class="no-alert-tip">暂无异常提醒</div>
     </el-card>
 
+    <!-- 统计卡片 -->
     <el-row :gutter="16">
       <el-col v-for="c in cards" :key="c.key" :xs="12" :sm="12" :md="6">
-        <el-card shadow="hover" class="stat-card" @click="go(c.to)">
-          <div class="stat-icon" :style="{ background: c.color + '1a', color: c.color }">
+        <el-card
+          shadow="hover"
+          class="stat-card"
+          :style="{
+            background: `linear-gradient(135deg, ${c.color}12 0%, #ffffff 62%)`,
+            borderLeft: `4px solid ${c.color}`,
+          }"
+          @click="go(c.to)"
+        >
+          <div class="stat-icon" :style="{ background: c.color + '1f', color: c.color }">
             {{ c.icon }}
           </div>
           <div class="stat-value" :style="{ color: c.color }">
@@ -277,8 +363,16 @@ function restoreAlerts() {
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>
-            <div class="card-head">
-              <span>每日新增趋势（近 {{ trends?.days ?? 14 }} 天）</span>
+            <div class="card-head wrap">
+              <span>每日新增趋势（近 {{ trendDays }} 天）</span>
+              <div class="chart-ops">
+                <el-switch v-model="compareMode" size="small" active-text="对比OCR失败率" @change="renderTrendChart" />
+                <el-radio-group v-model="trendDays" size="small" @change="onDaysChange">
+                  <el-radio-button label="7">7天</el-radio-button>
+                  <el-radio-button label="14">14天</el-radio-button>
+                  <el-radio-button label="30">30天</el-radio-button>
+                </el-radio-group>
+              </div>
             </div>
           </template>
           <div ref="trendChartRef" class="chart"></div>
@@ -286,7 +380,16 @@ function restoreAlerts() {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header><span>识别成功率 / OCR 失败率趋势</span></template>
+          <template #header>
+            <div class="card-head wrap">
+              <span>识别成功率 / OCR 失败率趋势</span>
+              <el-radio-group v-model="trendDays" size="small" @change="onDaysChange">
+                <el-radio-button label="7">7天</el-radio-button>
+                <el-radio-button label="14">14天</el-radio-button>
+                <el-radio-button label="30">30天</el-radio-button>
+              </el-radio-group>
+            </div>
+          </template>
           <div ref="rateChartRef" class="chart"></div>
         </el-card>
       </el-col>
@@ -297,23 +400,11 @@ function restoreAlerts() {
         <el-card shadow="never">
           <template #header>
             <div class="card-head">
-              <span>文件类型分布（点击查看）</span>
+              <span>文件类型分布（点击查看该类型文件）</span>
               <el-link type="primary" @click="go('/library')">全部文件 →</el-link>
             </div>
           </template>
-          <div v-if="stats && stats.type_counts.length" class="type-list">
-            <div
-              v-for="(t, i) in stats.type_counts"
-              :key="t.type"
-              class="type-item"
-              @click="openTypeDocs(t.type)"
-            >
-              <span class="type-dot" :style="{ background: typeColor(i) }"></span>
-              <span class="type-name">{{ t.type }}</span>
-              <span class="type-count" :style="{ color: typeColor(i) }">{{ t.count }} 份</span>
-              <el-icon class="type-arrow"><ArrowRight /></el-icon>
-            </div>
-          </div>
+          <div v-if="stats && stats.type_counts.length" ref="typePieRef" class="chart pie-chart"></div>
           <el-empty v-else description="暂无文件" :image-size="80" />
         </el-card>
       </el-col>
@@ -342,8 +433,6 @@ function restoreAlerts() {
         </el-card>
       </el-col>
     </el-row>
-
-
   </div>
 
   <!-- 类型文件抽屉：点击类型分布直接看该类型文件 -->
@@ -373,12 +462,14 @@ function restoreAlerts() {
 <style scoped>
 .stat-card {
   text-align: center;
-  padding: 8px 0;
+  padding: 14px 0;
   cursor: pointer;
-  transition: transform 0.15s;
+  transition: transform 0.15s, box-shadow 0.15s;
+  border-radius: 10px;
 }
 .stat-card:hover {
   transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1) !important;
 }
 .stat-icon {
   width: 48px;
@@ -414,6 +505,16 @@ function restoreAlerts() {
   justify-content: space-between;
   align-items: center;
 }
+.card-head.wrap {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chart-ops {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 .alert-card {
   border-color: #f3d19e;
 }
@@ -436,43 +537,10 @@ function restoreAlerts() {
 }
 .chart {
   width: 100%;
-  height: 280px;
+  height: 300px;
 }
-.type-list {
-  display: flex;
-  flex-direction: column;
-}
-.type-item {
-  display: flex;
-  align-items: center;
-  padding: 10px 8px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.type-item:hover {
-  background: #f5f7fa;
-}
-.type-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  margin-right: 12px;
-  flex-shrink: 0;
-}
-.type-name {
-  flex: 1;
-  font-size: 14px;
-  color: #303133;
-}
-.type-count {
-  font-weight: 600;
-  font-size: 15px;
-  margin-right: 8px;
-}
-.type-arrow {
-  color: #c0c4cc;
-  font-size: 12px;
+.pie-chart {
+  height: 300px;
 }
 .type-doc-item {
   display: flex;

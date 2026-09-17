@@ -53,8 +53,8 @@ export interface DashboardTrends {
   alerts: DashboardAlert[]
 }
 
-export function getDashboardTrends(): Promise<DashboardTrends> {
-  return http.get('/system/dashboard/trends')
+export function getDashboardTrends(days: number = 14): Promise<DashboardTrends> {
+  return http.get('/system/dashboard/trends', { params: { days } })
 }
 
 // ---------- 文件关联（重定位） ----------
