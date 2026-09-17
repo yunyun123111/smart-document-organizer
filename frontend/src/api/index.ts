@@ -233,7 +233,27 @@ export function updateDocument(id: number, payload: DocumentUpdatePayload): Prom
   return http.patch(`/documents/${id}`, payload)
 }
 
+export function batchArchiveDocuments(
+  doc_ids: number[],
+  category_path?: string,
+): Promise<{ ok: boolean; success_count: number; failed_count: number; results: { id: number; success: boolean; path?: string; error?: string }[] }> {
+  return http.post('/documents/batch-archive', { doc_ids, ...(category_path ? { category_path } : {}) })
+}
+
+export function batchReprocessDocuments(
+  doc_ids: number[],
+): Promise<{ ok: boolean; success_count: number; failed_count: number; results: { id: number; success: boolean; error?: string }[] }> {
+  return http.post('/documents/batch-reprocess', { doc_ids })
+}
+
+export function batchUndoDocuments(
+  doc_ids: number[],
+): Promise<{ ok: boolean; success_count: number; failed_count: number; results: { id: number; success: boolean; error?: string }[] }> {
+  return http.post('/documents/batch-undo', { doc_ids })
+}
+
 export function batchDeleteDocuments(
+
   doc_ids: number[],
 ): Promise<{ ok: boolean; deleted_count: number; missing_count: number }> {
   return http.post('/documents/batch-delete', { doc_ids })

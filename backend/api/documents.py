@@ -20,12 +20,18 @@ from backend.models import (
     OP_RENAME,
     OP_USER_EDIT,
     RESULT_OK,
+    SOURCE_RULE,
     SOURCE_USER,
+    STATUS_ARCHIVED,
+    STATUS_DUPLICATE,
+    STATUS_FAILED,
     STATUS_NEED_REVIEW,
+    STATUS_PENDING,
     STATUS_PROCESSING,
     STATUS_RECYCLED,
     Document,
     DocumentField,
+    OperationLog,
 )
 from backend.schemas.document import DocumentDetail, DocumentListItem
 from backend.schemas.processing import UploadResponse
@@ -36,7 +42,10 @@ from backend.services.document_search import (
 )
 from backend.services.duplicate_service import duplicate_service
 from backend.services.relocate_service import missing_documents, relocate
+from backend.services.archive_service import ArchiveService
+from backend.services.classifier import ClassifierService
 from backend.services.operation_service import log_operation
+from backend.services.undo_service import REVERSIBLE_OPS, undo_service
 from backend.services.recycle_service import recycle_service
 from backend.services.processing_service import processing_service
 from backend.utils.file_utils import get_file_type, get_mime_type
@@ -233,6 +242,133 @@ def list_document_categories(db: Session = Depends(get_db)):
 
 class BatchDeleteRequest(BaseModel):
     doc_ids: list[int]
+
+
+# ---------------- 批量操作（文件整理页） ----------------
+
+class _BatchIds(BaseModel):
+    doc_ids: list[int]
+
+
+class _BatchArchiveRequest(BaseModel):
+    doc_ids: list[int]
+    category_path: Optional[str] = None
+
+
+@router.post("/batch-archive")
+def batch_archive_documents(req: _BatchArchiveRequest, db: Session = Depends(get_db)):
+    """批量确认归档：按建议分类（或指定分类）直接归档，接受待整理/待审核/失败状态。"""
+    results: list[dict] = []
+    for doc_id in req.doc_ids:
+        doc = (
+            db.query(Document)
+            .options(joinedload(Document.fields))
+            .filter(Document.id == doc_id)
+            .first()
+        )
+        if doc is None or doc.status in (STATUS_ARCHIVED, STATUS_RECYCLED, STATUS_DUPLICATE):
+            results.append({"id": doc_id, "success": False, "error": "不存在或状态不可归档"})
+            continue
+        fields = {f.field_name: f.field_value for f in doc.fields}
+        category_path = req.category_path or fields.get("suggested_category") or "其他"
+        source = Path(doc.current_path)
+        if not source.exists():
+            results.append({"id": doc_id, "success": False, "error": "原文件已不存在，无法归档"})
+            continue
+        # 优先复用建议文件名；没有则按分类模板渲染
+        filename = doc.current_filename
+        if not filename or filename == doc.original_filename:
+            try:
+                from backend.services.review_support import _render_suggestion
+                filename = _render_suggestion(db, doc, category_path, fields) or None
+            except Exception:  # noqa: BLE001
+                filename = None
+        archive = ArchiveService(db)
+        ar = archive.archive(
+            source,
+            category_path=category_path,
+            filename=filename,
+            date_str=fields.get("date"),
+            document_id=doc.id,
+        )
+        if ar.success:
+            results.append({"id": doc_id, "success": True, "path": str(ar.document_path)})
+        elif ar.duplicate:
+            results.append({"id": doc_id, "success": False, "error": "目标已存在相同文件（重复）"})
+        else:
+            results.append({"id": doc_id, "success": False, "error": ar.error or "归档失败"})
+    ok = sum(1 for r in results if r["success"])
+    logger.info("批量归档完成: %d/%d 成功", ok, len(results))
+    return {"ok": True, "success_count": ok, "failed_count": len(results) - ok, "results": results}
+
+
+@router.post("/batch-reprocess")
+def batch_reprocess_documents(req: _BatchIds, db: Session = Depends(get_db)):
+    """批量重跑识别（OCR/规则/模板/AI）：更新类型、字段与置信度，状态回到待整理。"""
+    results: list[dict] = []
+    for doc_id in req.doc_ids:
+        try:
+            doc = db.get(Document, doc_id)
+            if doc is None or doc.status in (STATUS_ARCHIVED, STATUS_RECYCLED, STATUS_DUPLICATE):
+                results.append({"id": doc_id, "success": False, "error": "状态不可重跑"})
+                continue
+            source = Path(doc.current_path or doc.original_path or "")
+            if not source.exists():
+                results.append({"id": doc_id, "success": False, "error": "文件不存在"})
+                continue
+            result = ClassifierService(db).analyze(source, document_id=doc.id)
+            doc.document_type = result.document_type or ""
+            doc.title = result.title or ""
+            doc.confidence = result.confidence.score if result.confidence else None
+            if hasattr(result, "text"):
+                doc.extracted_text = (result.text or "")[:5000]
+            # 清旧字段、写新字段（含建议分类）
+            db.query(DocumentField).filter(DocumentField.document_id == doc.id).delete()
+            for name, (value, conf, fsrc) in result.fields.items():
+                db.add(DocumentField(
+                    document_id=doc.id, field_name=name, field_value=str(value),
+                    confidence=conf, source=fsrc,
+                ))
+            db.add(DocumentField(
+                document_id=doc.id, field_name="suggested_category",
+                field_value=result.suggested_category or "其他",
+                confidence=result.confidence.score if result.confidence else 0.0,
+                source=SOURCE_RULE,
+            ))
+            doc.status = STATUS_PENDING
+            db.commit()
+            results.append({"id": doc_id, "success": True})
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            results.append({"id": doc_id, "success": False, "error": str(e)[:200]})
+    ok = sum(1 for r in results if r["success"])
+    logger.info("批量重跑识别完成: %d/%d 成功", ok, len(results))
+    return {"ok": True, "success_count": ok, "failed_count": len(results) - ok, "results": results}
+
+
+@router.post("/batch-undo")
+def batch_undo_documents(req: _BatchIds, db: Session = Depends(get_db)):
+    """批量撤销：对每个文档撤销最近一次可逆操作（归档/移动/重命名），回到待整理。"""
+    results: list[dict] = []
+    for doc_id in req.doc_ids:
+        log = (
+            db.query(OperationLog)
+            .filter(
+                OperationLog.document_id == doc_id,
+                OperationLog.operation_type.in_(REVERSIBLE_OPS),
+                OperationLog.result == RESULT_OK,
+            )
+            .order_by(OperationLog.id.desc())
+            .first()
+        )
+        if log is None:
+            results.append({"id": doc_id, "success": False, "error": "无可撤销操作"})
+            continue
+        r = undo_service.undo(db, log.id)
+        results.append({"id": doc_id, "success": r.success, "error": r.error or ""})
+    ok = sum(1 for r in results if r["success"])
+    logger.info("批量撤销完成: %d/%d 成功", ok, len(results))
+    return {"ok": True, "success_count": ok, "failed_count": len(results) - ok, "results": results}
 
 
 @router.post("/batch-delete")
