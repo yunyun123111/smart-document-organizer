@@ -84,37 +84,30 @@ onBeforeUnmount(() => {
       <div class="logo">
         <h2>📁 智能文档整理</h2>
       </div>
-      <el-menu router :default-active="$route.path" class="menu">
-        <el-menu-item index="/">
-          <span>数据看板</span>
-        </el-menu-item>
-        <el-menu-item index="/organize">
-          <span>文件整理</span>
-        </el-menu-item>
-        <el-menu-item index="/review">
-          <span>待人工确认</span>
-        </el-menu-item>
-        <el-menu-item index="/library">
-          <span>文档库</span>
-        </el-menu-item>
-        <el-menu-item index="/archives">
-          <span>业务档案</span>
-        </el-menu-item>
-        <el-menu-item index="/recycle-bin">
-          <span>回收站</span>
-        </el-menu-item>
-        <el-menu-item index="/categories">
-          <span>分类管理</span>
-        </el-menu-item>
-        <el-menu-item index="/memories">
-          <span>自动归档</span>
-        </el-menu-item>
-        <el-menu-item index="/logs">
-          <span>操作日志</span>
-        </el-menu-item>
-        <el-menu-item index="/settings">
-          <span>系统设置</span>
-        </el-menu-item>
+      <el-menu
+        router
+        :default-active="$route.path"
+        :default-openeds="['doc-group', 'data-group', 'lib-group', 'sys-group']"
+        class="menu"
+      >
+        <el-sub-menu index="doc-group" title="文档处理">
+          <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
+          <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
+          <el-menu-item index="/memories"><span>自动归档</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="data-group" title="数据与分析">
+          <el-menu-item index="/"><span>数据看板</span></el-menu-item>
+          <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="lib-group" title="文档库">
+          <el-menu-item index="/library"><span>文档库</span></el-menu-item>
+          <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
+          <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="sys-group" title="系统">
+          <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
+          <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-aside>
 
@@ -130,17 +123,31 @@ onBeforeUnmount(() => {
       <div class="logo drawer-logo">
         <h2>📁 智能文档整理</h2>
       </div>
-      <el-menu router :default-active="$route.path" class="menu" @select="onMenuSelect">
-        <el-menu-item index="/"><span>数据看板</span></el-menu-item>
-        <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
-        <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
-        <el-menu-item index="/library"><span>文档库</span></el-menu-item>
-        <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
-        <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
-        <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
-        <el-menu-item index="/memories"><span>自动归档</span></el-menu-item>
-        <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
-        <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
+      <el-menu
+        router
+        :default-active="$route.path"
+        :default-openeds="['doc-group', 'data-group', 'lib-group', 'sys-group']"
+        class="menu"
+        @select="onMenuSelect"
+      >
+        <el-sub-menu index="doc-group" title="文档处理">
+          <el-menu-item index="/organize"><span>文件整理</span></el-menu-item>
+          <el-menu-item index="/review"><span>待人工确认</span></el-menu-item>
+          <el-menu-item index="/memories"><span>自动归档</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="data-group" title="数据与分析">
+          <el-menu-item index="/"><span>数据看板</span></el-menu-item>
+          <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="lib-group" title="文档库">
+          <el-menu-item index="/library"><span>文档库</span></el-menu-item>
+          <el-menu-item index="/archives"><span>业务档案</span></el-menu-item>
+          <el-menu-item index="/recycle-bin"><span>回收站</span></el-menu-item>
+        </el-sub-menu>
+        <el-sub-menu index="sys-group" title="系统">
+          <el-menu-item index="/categories"><span>分类管理</span></el-menu-item>
+          <el-menu-item index="/settings"><span>系统设置</span></el-menu-item>
+        </el-sub-menu>
       </el-menu>
     </el-drawer>
 
@@ -210,6 +217,12 @@ onBeforeUnmount(() => {
   border-right: none;
   background-color: transparent;
 }
+.menu :deep(.el-sub-menu__title) {
+  color: rgba(255, 255, 255, 0.75);
+}
+.menu :deep(.el-sub-menu__title:hover) {
+  color: #fff;
+}
 .menu :deep(.el-menu-item) {
   color: rgba(255, 255, 255, 0.75);
 }
@@ -266,6 +279,14 @@ onBeforeUnmount(() => {
 .mobile-drawer .el-menu {
   border-right: none;
   background-color: transparent;
+}
+.mobile-drawer .el-sub-menu__title {
+  color: rgba(255, 255, 255, 0.75);
+  height: 52px;
+  line-height: 52px;
+}
+.mobile-drawer .el-sub-menu__title:hover {
+  color: #fff;
 }
 .mobile-drawer .el-menu-item {
   color: rgba(255, 255, 255, 0.75);
