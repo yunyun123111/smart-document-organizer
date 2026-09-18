@@ -460,7 +460,7 @@ onUnmounted(() => {
       <el-step title="放入文件" description="把杂乱文件拖入「待整理目录」，或在下方上传" />
       <el-step title="智能整理" description="系统自动识别类型、提取字段、计算置信度" />
       <el-step title="人工确认" description="置信度不足的文件进入「待人工确认」列表，可在本页直接编辑字段确认归档" />
-      <el-step title="归档完成" description="确认后按「分类/年/月」自动归档，支持随时撤销" />
+      <el-step title="归档完成" description="确认后按「分类/年/月」（可在系统设置改归档目录结构）自动归档，支持随时撤销" />
     </el-steps>
   </el-card>
 

@@ -33,6 +33,18 @@ import {
 } from '@/api'
 
 const form = ref<Settings | null>(null)
+const templatePresets = [
+  { value: 'category/year/month', label: '分类 / 年 / 月（默认）' },
+  { value: 'category/customer/contract_no', label: '分类 / 客户名 / 合同编号' },
+  { value: 'category/project_no/date', label: '分类 / 项目编号 / 日期' },
+  { value: 'category/contract_no', label: '分类 / 合同编号' },
+  { value: 'category/ship_name/year', label: '分类 / 船名 / 年份' },
+]
+const customTemplate = ref('')
+function effectiveTemplate(): string {
+  if (form.value?.archive_template === '__custom__') return customTemplate.value.trim() || 'category/year/month'
+  return form.value?.archive_template || 'category/year/month'
+}
 const aiApiKey = ref('')
 const accessPassword = ref('')
 const emailPassword = ref('')
@@ -201,6 +213,9 @@ async function doCheckEmail() {
 
 async function load() {
   form.value = await getSettings()
+  const savedTpl = form.value?.archive_template || ''
+  customTemplate.value =
+    savedTpl && !templatePresets.some((t) => t.value === savedTpl) ? savedTpl : ''
   aiApiKey.value = ''
   accessPassword.value = ''
   emailPassword.value = ''
@@ -234,6 +249,7 @@ async function save() {
       conf_keyword_weight: form.value.conf_keyword_weight,
       conf_ai_weight: form.value.conf_ai_weight,
       allow_overwrite: form.value.allow_overwrite,
+      archive_template: effectiveTemplate(),
     }
     if (aiApiKey.value.trim()) {
       data.ai_api_key = aiApiKey.value.trim()
@@ -413,6 +429,36 @@ onMounted(() => { load(); loadExcelSources() })
         <el-form-item label="待整理目录">
           <el-input v-model="form.inbox_root" />
           <div class="gray small">批量整理时扫描此目录中的文件</div>
+        </el-form-item>
+        <el-form-item label="归档目录结构">
+          <el-select v-model="form.archive_template" style="width: 100%">
+            <el-option
+              v-for="t in templatePresets"
+              :key="t.value"
+              :label="t.label"
+              :value="t.value"
+            />
+            <el-option label="自定义（用 / 连接段）" value="__custom__" />
+          </el-select>
+          <div class="gray small" style="line-height: 1.6; margin-top: 4px">
+            归档路径 = 文档根目录 / 分类 / 后续各段。可用段：<code>category</code>（分类，固定首位）、
+            <code>year</code> / <code>month</code> / <code>day</code> / <code>date</code>（日期，来自识别日期），
+            以及业务字段名如 <code>customer</code>（客户）、<code>contract_no</code>（合同号）、
+            <code>ship_name</code>（船名）等。字段缺失时该段自动跳过，不留空目录。
+          </div>
+          <el-input
+            v-if="form.archive_template === '__custom__'"
+            v-model="customTemplate"
+            class="mt8"
+            placeholder="如 category/customer/contract_no"
+          />
+          <el-input
+            v-else
+            class="mt8"
+            :model-value="form.archive_template"
+            disabled
+          />
+          <div class="gray small" style="margin-top: 4px">仅影响之后归档的新文件，已归档文件路径不变。</div>
         </el-form-item>
       </el-form>
     </el-card>

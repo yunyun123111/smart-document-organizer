@@ -21,6 +21,7 @@ os.environ["AI_BASE_URL"] = ""
 os.environ["AI_API_KEY"] = ""
 os.environ["ALLOW_OVERWRITE"] = "False"
 os.environ["ACCESS_PASSWORD"] = ""  # 测试环境关闭访问密码鉴权，避免 .env 密码导致全部 API 401
+os.environ["ARCHIVE_TEMPLATE"] = "category/year/month"  # 测试基线：默认归档模板，不受本机 .env 影响
 
 from sqlalchemy import text
 

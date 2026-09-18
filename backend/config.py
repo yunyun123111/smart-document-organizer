@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     INBOX_ROOT: str = str(BASE_DIR / "data/inbox")
     TEMP_DIR: str = str(BASE_DIR / "data/temp")
     RECYCLE_BIN_ROOT: str = str(BASE_DIR / "data/recycle_bin")
+    # 归档目录结构模板（/ 分隔；支持 category/year/month/day/date 及任意业务字段名，
+    # 如 customer/counterparty/contract_no/project_no/ship_name；字段缺失时该段自动跳过）
+    ARCHIVE_TEMPLATE: str = "category/year/month"
     EXCEL_SOURCES_ROOT: str = str(BASE_DIR / "data/excel_sources")
 
     # 日志
@@ -138,6 +141,7 @@ class Settings(BaseSettings):
         "temp_dir": "TEMP_DIR",
         "log_dir": "LOG_DIR",
         "recycle_bin_root": "RECYCLE_BIN_ROOT",
+        "archive_template": "ARCHIVE_TEMPLATE",
         "excel_sources_root": "EXCEL_SOURCES_ROOT",
     }
 

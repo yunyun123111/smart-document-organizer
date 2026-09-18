@@ -23,6 +23,7 @@ from backend.config import settings
 from backend.models import (
     STATUS_ARCHIVED,
     Document,
+    DocumentField,
     OP_ARCHIVE,
     RESULT_FAILED,
     RESULT_OK,
@@ -81,23 +82,61 @@ class ArchiveService:
             else settings.ALLOW_OVERWRITE
         )
 
-    def build_target_dir(self, category_path: str, date_str: str | None = None) -> Path:
-        """生成归档目录：DOCUMENT_ROOT / 分类路径 / 年 / 月（规格书第二十九节）。
+    def build_target_dir(
+        self,
+        category_path: str,
+        date_str: str | None = None,
+        fields: dict[str, str] | None = None,
+    ) -> Path:
+        """按归档模板生成归档目录：DOCUMENT_ROOT / 分类 / 模板各段。
 
-        category_path 可能来自请求体（人工审核可指定分类），必须做路径穿越防护：
-        禁止 .. / 绝对路径逃出 document_root。
+        模板来自 settings.ARCHIVE_TEMPLATE（如 "category/year/month"、
+        "category/customer/contract_no"、"category/project_no/date"）：
+        - 首段固定为 category（分类路径，来自请求体时做穿越防护）；
+        - 其余段支持 year / month / day / date 与任意业务字段名
+          （customer / counterparty / contract_no / project_no / ship_name 等），
+          从 fields 取文档识别字段；字段缺失或非法时自动跳过该段，不产生空目录。
         """
         rel = (category_path or "其他").strip().strip("/\\")
         if not rel:
             rel = "其他"
         base = safe_join(self.document_root, rel)  # 非法（越界/绝对）时抛 ValueError
+        fields = fields or {}
+        template = (settings.ARCHIVE_TEMPLATE or "category/year/month").strip("/\\")
+        for seg in template.split("/"):
+            seg = seg.strip()
+            if not seg or seg == "category":
+                continue
+            val = self._resolve_segment(seg, date_str, fields)
+            if not val:
+                continue
+            safe_val = safe_filename(val, "")
+            if not safe_val or safe_val in (".", ".."):
+                continue
+            base = base / safe_val
+        return base
+
+    @staticmethod
+    def _resolve_segment(seg: str, date_str: str | None, fields: dict[str, str]) -> str:
+        """把模板段解析为目录名；无法解析返回空串（调用方跳过该段）。"""
+        seg = seg.strip().lower()
+        d: datetime | None = None
         if date_str:
             try:
                 d = datetime.strptime(date_str[:10], "%Y-%m-%d")
-                base = base / str(d.year) / f"{d.month:02d}"
             except (ValueError, TypeError):
-                pass  # 日期非法则忽略年/月目录
-        return base
+                d = None
+        if seg == "year":
+            return str(d.year) if d else ""
+        if seg == "month":
+            return f"{d.month:02d}" if d else ""
+        if seg == "day":
+            return f"{d.day:02d}" if d else ""
+        if seg == "date":
+            raw = (fields.get("date") or date_str or "").strip()
+            return raw[:10] if raw else ""
+        # 其余视为业务字段名（customer/counterparty/contract_no/...）
+        return (fields.get(seg) or "").strip()
 
     def archive(
         self,
@@ -150,8 +189,20 @@ class ArchiveService:
         job_id: int | None,
     ) -> ArchiveResult:
         # 分类与文件名都可能来自人工审核的请求体：先做安全清洗与穿越校验
+        # 归档模板的字段段从该文档识别字段取值（缺字段自动跳过）
+        _seg_fields: dict[str, str] = {}
+        if document_id is not None:
+            try:
+                _seg_fields = {
+                    f.field_name: f.field_value or ""
+                    for f in self.db.query(DocumentField)
+                    .filter(DocumentField.document_id == document_id)
+                    .all()
+                }
+            except Exception:  # noqa: BLE001
+                _seg_fields = {}
         try:
-            target_dir = self.build_target_dir(category_path, date_str)
+            target_dir = self.build_target_dir(category_path, date_str, _seg_fields)
         except ValueError as e:
             logger.warning("非法归档分类路径: %r", category_path)
             return ArchiveResult(success=False, error=f"分类路径非法: {e}")

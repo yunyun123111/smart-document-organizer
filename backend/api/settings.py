@@ -40,6 +40,7 @@ def get_settings():
         email_user=settings.EMAIL_USER or "",
         email_password_set=bool(settings.EMAIL_PASSWORD),
         email_poll_interval=settings.EMAIL_POLL_INTERVAL,
+        archive_template=settings.ARCHIVE_TEMPLATE,
     )
 
 

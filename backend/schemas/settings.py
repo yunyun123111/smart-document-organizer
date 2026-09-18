@@ -36,6 +36,8 @@ class SettingsOut(BaseModel):
     email_user: str
     email_password_set: bool
     email_poll_interval: int
+    # 归档目录结构模板（category/year/month 等）
+    archive_template: str
 
 
 class SettingsUpdate(BaseModel):
@@ -68,3 +70,4 @@ class SettingsUpdate(BaseModel):
     email_user: Optional[str] = None
     email_password: Optional[str] = None
     email_poll_interval: Optional[int] = None
+    archive_template: Optional[str] = None

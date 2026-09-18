@@ -570,6 +570,7 @@ export interface Settings {
   email_password_set: boolean
   email_password?: string
   email_poll_interval: number
+  archive_template: string
 }
 
 export function getSettings(): Promise<Settings> {
