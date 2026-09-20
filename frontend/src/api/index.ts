@@ -581,6 +581,21 @@ export function updateSettings(data: Partial<Settings>): Promise<Settings> {
   return http.put('/settings', data)
 }
 
+// ---------- 归档模板预设（可自由添加/删除） ----------
+export interface ArchiveTemplateItem {
+  value: string
+  label: string
+}
+export function listArchiveTemplates(): Promise<{ templates: ArchiveTemplateItem[] }> {
+  return http.get('/settings/archive-templates')
+}
+export function addArchiveTemplate(item: { value: string; label?: string }): Promise<{ templates: ArchiveTemplateItem[] }> {
+  return http.post('/settings/archive-templates', item)
+}
+export function deleteArchiveTemplate(value: string): Promise<{ templates: ArchiveTemplateItem[] }> {
+  return http.delete('/settings/archive-templates', { params: { value } })
+}
+
 // ---------- 访问认证（局域网密码保护） ----------
 export interface AuthStatus {
   password_required: boolean

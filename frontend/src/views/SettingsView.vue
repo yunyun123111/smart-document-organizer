@@ -30,20 +30,49 @@ import {
   downloadBackup,
   listBackups,
   restoreBackup,
+  listArchiveTemplates,
+  addArchiveTemplate,
+  deleteArchiveTemplate,
+  type ArchiveTemplateItem,
 } from '@/api'
 
 const form = ref<Settings | null>(null)
-const templatePresets = [
-  { value: 'category/year/month', label: '分类 / 年 / 月（默认）' },
-  { value: 'category/customer/contract_no', label: '分类 / 客户名 / 合同编号' },
-  { value: 'category/project_no/date', label: '分类 / 项目编号 / 日期' },
-  { value: 'category/contract_no', label: '分类 / 合同编号' },
-  { value: 'category/ship_name/year', label: '分类 / 船名 / 年份' },
-]
+const templatePresets = ref<ArchiveTemplateItem[]>([])
 const customTemplate = ref('')
+const newTplValue = ref('')
+const newTplLabel = ref('')
+async function loadTemplatePresets() {
+  try {
+    const res = await listArchiveTemplates()
+    templatePresets.value = res.templates
+  } catch {
+    templatePresets.value = []
+  }
+}
+async function onAddTemplate() {
+  const v = newTplValue.value.trim()
+  if (!v) {
+    ElMessage.warning('请输入模板，如 category/customer/contract_no')
+    return
+  }
+  await addArchiveTemplate({ value: v, label: newTplLabel.value.trim() || v })
+  newTplValue.value = ''
+  newTplLabel.value = ''
+  await loadTemplatePresets()
+  ElMessage.success('已添加模板预设')
+}
+async function onDeleteTemplate(t: ArchiveTemplateItem) {
+  await ElMessageBox.confirm(`删除模板「${t.label}」？`, '删除确认', { type: 'warning' })
+  await deleteArchiveTemplate(t.value)
+  await loadTemplatePresets()
+  ElMessage.success('已删除')
+}
 function effectiveTemplate(): string {
   if (form.value?.archive_template === '__custom__') return customTemplate.value.trim() || 'category/year/month'
   return form.value?.archive_template || 'category/year/month'
+}
+function isKnownPreset(tpl: string): boolean {
+  return templatePresets.value.some((t) => t.value === tpl)
 }
 const aiApiKey = ref('')
 const accessPassword = ref('')
@@ -213,9 +242,9 @@ async function doCheckEmail() {
 
 async function load() {
   form.value = await getSettings()
+  await loadTemplatePresets()
   const savedTpl = form.value?.archive_template || ''
-  customTemplate.value =
-    savedTpl && !templatePresets.some((t) => t.value === savedTpl) ? savedTpl : ''
+  customTemplate.value = savedTpl && !isKnownPreset(savedTpl) ? savedTpl : ''
   aiApiKey.value = ''
   accessPassword.value = ''
   emailPassword.value = ''
@@ -440,6 +469,20 @@ onMounted(() => { load(); loadExcelSources() })
             />
             <el-option label="自定义（用 / 连接段）" value="__custom__" />
           </el-select>
+          <div style="display: flex; gap: 8px; margin-top: 6px">
+            <el-input v-model="newTplValue" placeholder="新增模板，如 category/customer/year" size="small" style="flex: 1" />
+            <el-input v-model="newTplLabel" placeholder="显示名（可选）" size="small" style="width: 180px" />
+            <el-button size="small" type="primary" @click="onAddTemplate">添加</el-button>
+          </div>
+          <div v-if="templatePresets.length" class="gray small" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px">
+            <el-tag
+              v-for="t in templatePresets"
+              :key="t.value"
+              closable
+              size="small"
+              @close="onDeleteTemplate(t)"
+            >{{ t.label }}</el-tag>
+          </div>
           <div class="gray small" style="line-height: 1.6; margin-top: 4px">
             归档路径 = 文档根目录 / 分类 / 后续各段。可用段：<code>category</code>（分类，固定首位）、
             <code>year</code> / <code>month</code> / <code>day</code> / <code>date</code>（日期，来自识别日期），

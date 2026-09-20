@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from backend.config import settings
 from backend.schemas.settings import SettingsOut, SettingsUpdate
@@ -42,6 +43,35 @@ def get_settings():
         email_poll_interval=settings.EMAIL_POLL_INTERVAL,
         archive_template=settings.ARCHIVE_TEMPLATE,
     )
+
+
+@router.get("/archive-templates")
+def get_archive_templates():
+    """归档模板预设列表（可自由增删，存本地 JSON）。"""
+    from backend.services.archive_template_service import list_templates
+
+    return {"templates": list_templates()}
+
+
+class _ArchiveTemplateItem(BaseModel):
+    value: str
+    label: str | None = None
+
+
+@router.post("/archive-templates")
+def add_archive_template(item: _ArchiveTemplateItem):
+    """新增/更新归档模板预设。"""
+    from backend.services.archive_template_service import add_template
+
+    return {"templates": add_template(item.value, item.label)}
+
+
+@router.delete("/archive-templates")
+def delete_archive_template(value: str):
+    """删除归档模板预设（按 value 精确匹配；value 含 / 故走 query 参数）。"""
+    from backend.services.archive_template_service import remove_template
+
+    return {"templates": remove_template(value)}
 
 
 @router.put("", response_model=SettingsOut)
