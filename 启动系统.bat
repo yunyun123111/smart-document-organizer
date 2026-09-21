@@ -1,5 +1,5 @@
 @echo off
-title 智能文档整理系统 - 一键启动
+title 智能文档整理系统 - 桌面版
 cd /d "%~dp0"
 where python >nul 2>&1
 if errorlevel 1 (
@@ -7,4 +7,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-python launcher.py
+python desktop_app.py
+if errorlevel 1 (
+    echo [错误] 桌面版启动失败，尝试传统浏览器模式...
+    python launcher.py
+)
+pause
