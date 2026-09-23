@@ -9,7 +9,8 @@ if errorlevel 1 (
 )
 python desktop_app.py
 if errorlevel 1 (
-    echo [错误] 桌面版启动失败，尝试传统浏览器模式...
+    echo [错误] 桌面版启动失败，请查看 data\desktop_app.log 了解原因。
+    echo [系统] 尝试传统浏览器模式...
     python launcher.py
 )
 pause
