@@ -211,6 +211,23 @@ const editCategory = ref('')
 const editFields = ref<Record<string, string>>({})
 const editSaving = ref(false)
 
+// 盖章检测展示（seal_status / seal_count 由本地图像算法写入）
+const sealInfo = computed(() => {
+  const s = editFields.value['seal_status']
+  if (!s) return null
+  const n = editFields.value['seal_count']
+  if (s === 'sealed') return n && n !== '1' ? `已盖章 ×${n}` : '已盖章'
+  if (s === 'unsealed') return '未盖章'
+  if (s === 'suspect') return '疑似盖章（黑白件）'
+  return s
+})
+const sealTagType = computed(() => {
+  const s = editFields.value['seal_status']
+  if (s === 'sealed') return 'success'
+  if (s === 'suspect') return 'warning'
+  return 'info'
+})
+
 const previewExt = computed(() => {
   const name = selectedDoc.value?.current_filename || selectedDoc.value?.original_filename || ''
   return name.toLowerCase().split('.').pop() || ''
@@ -560,6 +577,7 @@ onMounted(async () => {
               <h3 :title="selectedDoc.current_filename">{{ selectedDoc.current_filename }}</h3>
               <el-tag v-if="editDetail.document_type" size="small" type="primary">{{ editDetail.document_type }}</el-tag>
               <el-tag :type="statusTag(editDetail.status)" size="small">{{ statusLabel(editDetail.status) }}</el-tag>
+              <el-tag v-if="sealInfo" :type="sealTagType" size="small">{{ sealInfo }}</el-tag>
             </div>
             <div class="lib-detail-ops">
               <el-button v-if="editDetail.status === 'archived'" size="small" type="success" plain @click="openFile(editDetail.id)">打开原件</el-button>

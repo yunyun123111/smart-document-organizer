@@ -34,6 +34,8 @@ import {
   addArchiveTemplate,
   deleteArchiveTemplate,
   type ArchiveTemplateItem,
+  getWatchStatus,
+  type WatchStatus,
 } from '@/api'
 
 const form = ref<Settings | null>(null)
@@ -119,6 +121,37 @@ const fnLoading = ref(false)
 // 邮箱接收状态
 const emailStatus = ref<{ running: boolean; enabled: boolean; last_check?: string; last_error?: string | null; last_count?: number } | null>(null)
 const emailChecking = ref(false)
+
+// 目录自动监控状态
+const watchStatus = ref<WatchStatus | null>(null)
+// 编辑中的监控目录列表（保存时才提交）
+const watchDirsEdit = ref<string[]>([])
+
+async function loadWatchStatus() {
+  try {
+    watchStatus.value = await getWatchStatus()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function addWatchDir() {
+  watchDirsEdit.value.push('')
+}
+
+function removeWatchDir(idx: number) {
+  watchDirsEdit.value.splice(idx, 1)
+}
+
+function watchDirStatusText(dir: string): string {
+  const s = watchStatus.value?.dirs?.find((d) => d.dir === dir)
+  if (!s) return ''
+  const parts: string[] = []
+  if (s.last_scan_at) parts.push(`上次扫描 ${s.last_scan_at}`)
+  if (s.found_files) parts.push(`发现新文件 ${s.found_files} 个`)
+  if (s.last_job_id) parts.push(`最近触发任务 #${s.last_job_id}`)
+  return parts.join(' · ')
+}
 
 // 备份 / 恢复
 const backups = ref<BackupInfo[]>([])
@@ -248,9 +281,11 @@ async function load() {
   aiApiKey.value = ''
   accessPassword.value = ''
   emailPassword.value = ''
+  watchDirsEdit.value = [...(form.value?.watch_dirs || [])]
   loaded.value = true
   await loadFnRules()
   await loadEmailStatus()
+  await loadWatchStatus()
   await loadRelocateStatus()
   await loadBackups()
   await loadConfigCheck()
@@ -294,11 +329,18 @@ async function save() {
     if (emailPassword.value.trim()) {
       data.email_password = emailPassword.value.trim()
     }
+    // 目录自动监控
+    data.watch_enabled = form.value.watch_enabled
+    data.watch_dirs = watchDirsEdit.value.map((d) => d.trim()).filter(Boolean)
+    data.watch_interval = form.value.watch_interval
+    // 盖章检测
+    data.seal_detect_enabled = form.value.seal_detect_enabled
     await updateSettings(data)
     aiApiKey.value = ''
     accessPassword.value = ''
     emailPassword.value = ''
     ElMessage.success('设置已保存')
+    await loadWatchStatus()
     // 若刚设置了访问密码，刷新登录态（提示将需要密码）
     if (data.access_password) {
       ElMessage.warning('已设置访问密码，下次打开系统需输入密码')
@@ -572,6 +614,56 @@ onMounted(() => { load(); loadExcelSources() })
     </el-card>
 
     <el-card shadow="never" class="mb16">
+      <template #header><span>目录自动监控（主动整理：放进目录即自动归档）</span></template>
+      <div class="gray small mb8">
+        设置一个或多个目录后，系统后台定时扫描；发现新文件自动触发识别归档，无需打开网页操作。
+        监控线程只"发现"不移动文件——归档后文件会自动移入文档根目录；待人工确认的文件保留在原处等待审核。
+      </div>
+      <el-form label-width="120px">
+        <el-form-item label="启用监控">
+          <el-switch v-model="form.watch_enabled" />
+          <span class="gray small"> 开启后后台每 {{ form.watch_interval }} 秒扫描一次</span>
+        </el-form-item>
+        <el-form-item label="监控目录">
+          <div style="width: 100%">
+            <div v-for="(_, idx) in watchDirsEdit" :key="idx" class="watch-dir-row">
+              <el-input v-model="watchDirsEdit[idx]" placeholder="目录绝对路径，如 D:\共享文件夹" style="flex: 1" />
+              <el-button type="danger" link @click="removeWatchDir(idx)">删除</el-button>
+            </div>
+            <el-button type="primary" plain size="small" @click="addWatchDir">+ 添加监控目录</el-button>
+            <div class="gray small" style="margin-top: 4px">不能指向归档目录 / 回收站目录（防循环扫描）。目录不存在或无权限时状态栏会提示，不会影响服务。</div>
+          </div>
+        </el-form-item>
+        <el-form-item label="扫描间隔（秒）">
+          <el-input-number v-model="form.watch_interval" :min="10" :max="3600" :step="10" />
+        </el-form-item>
+        <el-form-item label="盖章检测">
+          <el-switch v-model="form.seal_detect_enabled" />
+          <span class="gray small"> 自动标注文档是否已盖章、章数（本地图像算法，不消耗 AI）</span>
+        </el-form-item>
+      </el-form>
+
+      <el-divider />
+      <div class="email-status">
+        <el-tag :type="watchStatus?.running ? 'success' : 'info'" size="small">
+          {{ watchStatus?.running ? '监控运行中' : '监控未运行' }}
+        </el-tag>
+        <el-tag v-if="watchStatus?.last_scan_at" type="info" size="small" class="ml8">
+          最近扫描：{{ watchStatus.last_scan_at }}
+        </el-tag>
+        <el-tag v-if="watchStatus?.dirs?.length" type="info" size="small" class="ml8">
+          监控 {{ watchStatus.dirs.length }} 个目录
+        </el-tag>
+        <div v-for="d in watchStatus?.dirs || []" :key="d.dir" class="watch-dir-status">
+          <span class="watch-dir-name">{{ d.dir }}</span>
+          <span class="gray small">{{ watchDirStatusText(d.dir) }}</span>
+          <el-alert v-if="d.last_error" type="error" :closable="false" show-icon class="mt4"
+            :title="'目录异常：' + d.last_error" />
+        </div>
+      </div>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
       <template #header><span>Excel 登记表（权威数据源：命中后用台账字段命名归档）</span></template>
       <div class="gray small mb8">
         上传你的业务登记台账（合同 / 结算 / 收付款等）。系统 OCR 识别出合同号后自动在台账中匹配，
@@ -818,6 +910,10 @@ code { background: #f0f2f5; padding: 0 4px; border-radius: 3px; }
 .ml8 { margin-left: 8px; }
 .email-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .email-error { flex-basis: 100%; margin-top: 4px; }
+.watch-dir-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.watch-dir-status { flex-basis: 100%; margin-top: 4px; }
+.watch-dir-name { font-weight: 600; margin-right: 8px; font-size: 13px; }
+.mt4 { margin-top: 4px; }
 .mr4 { margin-right: 4px; }
 .rel-result { margin-top: 8px; }
 .excel-source { border: 1px solid #ebeef5; border-radius: 6px; padding: 10px; }

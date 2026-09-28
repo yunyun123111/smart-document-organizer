@@ -571,6 +571,12 @@ export interface Settings {
   email_password?: string
   email_poll_interval: number
   archive_template: string
+  // 目录自动监控
+  watch_enabled: boolean
+  watch_dirs: string[]
+  watch_interval: number
+  // 盖章检测
+  seal_detect_enabled: boolean
 }
 
 export function getSettings(): Promise<Settings> {
@@ -579,6 +585,27 @@ export function getSettings(): Promise<Settings> {
 
 export function updateSettings(data: Partial<Settings>): Promise<Settings> {
   return http.put('/settings', data)
+}
+
+// ---------- 目录自动监控状态 ----------
+export interface WatchDirStatus {
+  dir: string
+  last_scan_at?: string | null
+  found_files?: number
+  last_job_id?: number | null
+  last_error?: string | null
+}
+
+export interface WatchStatus {
+  enabled: boolean
+  running: boolean
+  interval: number
+  last_scan_at?: string | null
+  dirs: WatchDirStatus[]
+}
+
+export function getWatchStatus(): Promise<WatchStatus> {
+  return http.get('/system/watch-status')
 }
 
 // ---------- 归档模板预设（可自由添加/删除） ----------

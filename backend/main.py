@@ -50,6 +50,13 @@ async def lifespan(app: FastAPI):
         sync_from_settings()
     except Exception:
         logger.exception("邮箱接收启动失败，本轮不启用")
+    # 目录自动监控（后台线程，配置变更后也可动态启停）
+    try:
+        from backend.services.folder_watcher import sync_from_settings as sync_watch
+
+        sync_watch()
+    except Exception:
+        logger.exception("目录监控启动失败，本轮不启用")
     yield
     logger.info("=== %s 退出 ===", settings.APP_NAME)
 

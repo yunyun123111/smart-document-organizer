@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     EMAIL_POLL_INTERVAL: int = 120  # 秒
     EMAIL_SSL: bool = True  # IMAP over SSL（993 端口）
 
+    # 目录自动监控（主动式：设置目录后自动扫描触发整理）
+    WATCH_ENABLED: bool = False
+    # 监控目录列表，JSON 数组字符串（如 '["D:\\共享\\a","D:\\共享\\b"]'）
+    WATCH_DIRS: str = "[]"
+    WATCH_INTERVAL: int = 30  # 秒
+
+    # 盖章检测（本地图像算法，零 AI token）
+    SEAL_DETECT_ENABLED: bool = True
+
     # OCR（P4 阶段接入 PaddleOCR）
     OCR_ENABLED: bool = True
 
@@ -105,6 +114,23 @@ class Settings(BaseSettings):
         return Path(self.EXCEL_SOURCES_ROOT)
 
     @property
+    def watch_dirs(self) -> list[Path]:
+        """解析 WATCH_DIRS JSON 数组为目录列表（跳过非法项）。"""
+        import json
+
+        raw = self.WATCH_DIRS or "[]"
+        try:
+            items = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            items = []
+        out: list[Path] = []
+        if isinstance(items, list):
+            for it in items:
+                if isinstance(it, str) and it.strip():
+                    out.append(Path(it.strip()))
+        return out
+
+    @property
     def log_dir(self) -> Path:
         return Path(self.LOG_DIR)
 
@@ -143,6 +169,10 @@ class Settings(BaseSettings):
         "recycle_bin_root": "RECYCLE_BIN_ROOT",
         "archive_template": "ARCHIVE_TEMPLATE",
         "excel_sources_root": "EXCEL_SOURCES_ROOT",
+        "watch_enabled": "WATCH_ENABLED",
+        "watch_dirs": "WATCH_DIRS",
+        "watch_interval": "WATCH_INTERVAL",
+        "seal_detect_enabled": "SEAL_DETECT_ENABLED",
     }
 
     def _resolve_field(self, key: str) -> str:

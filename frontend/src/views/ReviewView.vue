@@ -37,6 +37,23 @@ const customFilename = ref('')
 // 分屏可拖拽调整左右宽度
 const { leftRatio, startDrag } = useSplitDrag()
 
+// 盖章检测展示（seal_status / seal_count 由本地图像算法写入）
+const sealInfo = computed(() => {
+  const s = editableFields.value['seal_status']
+  if (!s) return null
+  const n = editableFields.value['seal_count']
+  if (s === 'sealed') return n && n !== '1' ? `已盖章 ×${n}` : '已盖章'
+  if (s === 'unsealed') return '未盖章'
+  if (s === 'suspect') return '疑似盖章（黑白件）'
+  return s
+})
+const sealTagType = computed(() => {
+  const s = editableFields.value['seal_status']
+  if (s === 'sealed') return 'success'
+  if (s === 'suspect') return 'warning'
+  return 'info'
+})
+
 const totalCount = computed(() => docs.value.length)
 const selectedCount = computed(() => selectedIds.value.length)
 const isAllSelected = computed(() => docs.value.length > 0 && selectedIds.value.length === docs.value.length)
@@ -405,6 +422,9 @@ onMounted(loadData)
               <el-descriptions-item label="大小">{{ fmtSize(detail.document.file_size) }}</el-descriptions-item>
               <el-descriptions-item label="识别置信度">
                 {{ detail.document.confidence !== null ? (detail.document.confidence * 100).toFixed(0) + '%' : '—' }}
+              </el-descriptions-item>
+              <el-descriptions-item v-if="sealInfo" label="盖章检测">
+                <el-tag :type="sealTagType" size="small">{{ sealInfo }}</el-tag>
               </el-descriptions-item>
             </el-descriptions>
 

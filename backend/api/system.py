@@ -128,3 +128,11 @@ def config_check(db: Session = Depends(get_db)):
     """配置状态校验：目录 / OCR / AI / 邮箱 / 安全 / 阈值 / 数据库。"""
     return run_config_checks(db=db)
 
+
+@router.get("/watch-status")
+def watch_status():
+    """目录自动监控状态（运行/目录/最近扫描/触发任务）。"""
+    from backend.services.folder_watcher import get_status
+
+    return get_status()
+

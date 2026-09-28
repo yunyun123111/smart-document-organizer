@@ -74,9 +74,17 @@ onUnmounted(() => {
       当前环境不支持内嵌 PDF 预览，请使用「打开原件」查看
     </object>
 
-    <!-- 图片 -->
+    <!-- 图片：el-image 支持点击放大 + 滚轮缩放 -->
     <div v-else-if="!loading && isImage && objectUrl" class="pv-img-wrap">
-      <img :src="objectUrl" class="pv-img" alt="预览" />
+      <el-image
+        :src="objectUrl"
+        :preview-src-list="[objectUrl]"
+        preview-teleported
+        hide-on-click-modal
+        fit="contain"
+        class="pv-img"
+        alt="预览"
+      />
     </div>
 
     <!-- 其他格式 -->
@@ -115,11 +123,13 @@ onUnmounted(() => {
   overflow: auto;
   display: flex;
   justify-content: center;
+  align-items: center;
   padding: 16px;
 }
 .pv-img {
   max-width: 100%;
-  height: auto;
+  max-height: 100%;
+  cursor: zoom-in;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
 }
 </style>

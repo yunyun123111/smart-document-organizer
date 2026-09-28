@@ -38,6 +38,12 @@ class SettingsOut(BaseModel):
     email_poll_interval: int
     # 归档目录结构模板（category/year/month 等）
     archive_template: str
+    # 目录自动监控
+    watch_enabled: bool
+    watch_dirs: list  # 监控目录列表（绝对路径）
+    watch_interval: int
+    # 盖章检测
+    seal_detect_enabled: bool
 
 
 class SettingsUpdate(BaseModel):
@@ -71,3 +77,9 @@ class SettingsUpdate(BaseModel):
     email_password: Optional[str] = None
     email_poll_interval: Optional[int] = None
     archive_template: Optional[str] = None
+    # 目录自动监控
+    watch_enabled: Optional[bool] = None
+    watch_dirs: Optional[list] = None  # 监控目录列表
+    watch_interval: Optional[int] = None
+    # 盖章检测
+    seal_detect_enabled: Optional[bool] = None

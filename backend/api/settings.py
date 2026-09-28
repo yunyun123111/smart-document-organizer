@@ -1,6 +1,8 @@
 """系统设置 API：读取 / 更新。"""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
@@ -42,6 +44,10 @@ def get_settings():
         email_password_set=bool(settings.EMAIL_PASSWORD),
         email_poll_interval=settings.EMAIL_POLL_INTERVAL,
         archive_template=settings.ARCHIVE_TEMPLATE,
+        watch_enabled=settings.WATCH_ENABLED,
+        watch_dirs=[str(d) for d in settings.watch_dirs],
+        watch_interval=settings.WATCH_INTERVAL,
+        seal_detect_enabled=settings.SEAL_DETECT_ENABLED,
     )
 
 
@@ -77,6 +83,9 @@ def delete_archive_template(value: str):
 @router.put("", response_model=SettingsOut)
 def update_settings(req: SettingsUpdate):
     data = req.model_dump(exclude_unset=True)
+    # watch_dirs 前端传列表，落库为 JSON 数组字符串
+    if "watch_dirs" in data and isinstance(data["watch_dirs"], list):
+        data["watch_dirs"] = json.dumps(data["watch_dirs"], ensure_ascii=False)
     if data:
         settings.update(**data)
         logger.info("更新系统设置: %s", sorted(data.keys()))
@@ -89,4 +98,13 @@ def update_settings(req: SettingsUpdate):
                 logger.info("邮箱轮询已同步: running=%s", running)
             except Exception:
                 logger.exception("邮箱轮询同步失败")
+        # 目录监控配置变更后动态启停监控线程（无需重启）
+        if any(k in data for k in ("watch_enabled", "watch_dirs", "watch_interval")):
+            try:
+                from backend.services.folder_watcher import sync_from_settings
+
+                running = sync_from_settings()
+                logger.info("目录监控已同步: running=%s", running)
+            except Exception:
+                logger.exception("目录监控同步失败")
     return get_settings()

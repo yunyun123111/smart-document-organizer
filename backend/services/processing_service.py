@@ -123,6 +123,10 @@ class ProcessingService:
         with self._lock:
             return any(e is not None and not e.is_set() for e in self._jobs.values())
 
+    def has_running(self) -> bool:
+        """公开入口：是否有正在运行的任务（供目录监控等外部服务调用）。"""
+        return self._has_running()
+
     def _launch(self, files: list[Path], src: Path) -> ProcessingJob:
         """创建任务并后台启动处理线程；无文件则立即完成。"""
         with SessionLocal() as db:
@@ -346,6 +350,28 @@ class ProcessingService:
         doc.confidence = result.confidence.score if result.confidence else None
         doc.extracted_text = result.text[:5000]
         self._save_fields(db, doc, result)
+
+        # 盖章检测（本地图像算法，零 token；失败不影响识别主流程）
+        if settings.SEAL_DETECT_ENABLED and file_type in ("pdf", "jpg", "jpeg", "png", "bmp", "webp"):
+            try:
+                from backend.services.seal_detector import detect_from_file
+
+                seal = detect_from_file(file_path)
+                if not seal.skip:
+                    db.add(DocumentField(
+                        document_id=doc.id, field_name="seal_status",
+                        field_value=seal.status, confidence=seal.confidence,
+                        source="seal_detector",
+                    ))
+                    if seal.count:
+                        db.add(DocumentField(
+                            document_id=doc.id, field_name="seal_count",
+                            field_value=str(seal.count), confidence=seal.confidence,
+                            source="seal_detector",
+                        ))
+                    db.commit()
+            except Exception:  # noqa: BLE001
+                logger.exception("盖章检测异常 %s", file_path)
 
         if result.error or result.decision == "reject":
             # 无法判断 → 人工审核
