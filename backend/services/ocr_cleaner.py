@@ -133,7 +133,10 @@ class OCRCleaner:
 
         # 货币符号后的数字串（保留原符号）
         def _repl_curr_preserve(m: re.Match) -> str:
-            sym = m.group(0)[0]
+            # lookbehind 捕获组不在 m.group(0) 内，必须从原串按起始位置回取符号，
+            # 否则 m.group(0)[0] 取到的是首个数字，会把金额首位重复一遍
+            # （¥5625504.42 -> ¥55625504.42）。
+            sym = m.string[m.start() - 1]
             seg = m.group(1)
             out = []
             for ch in seg:

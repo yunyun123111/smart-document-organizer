@@ -42,7 +42,7 @@ _COMPANY_GENERIC = re.compile(
 
 # 日期：上下文锚定（开票日期/签订日期/交易日期/日期）+ 通用
 _DATE_CONTEXT = re.compile(
-    r"(?:开票日期|签订日期|交易日期|合同日期|日期|签署日期|出票日期)[:：]?\s*"
+    r"(?:开票日期|签订日期|交易日期|交易时间|合同日期|记账日期|入账日期|回单日期|成交日期|日期|签署日期|出票日期)[:：]?\s*"
     r"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})日?"
 )
 _DATE_GENERIC = re.compile(r"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})日?")
@@ -70,7 +70,15 @@ _INVOICE_NO = re.compile(
     re.IGNORECASE,
 )
 
+# 结算单结算额锚点：标签 + 任意个货币符号（OCR 会把 ¥ 重影成 ¥¥¥，实测 3 个）
+_SETTLE_AMOUNT_ANCHOR = re.compile(
+    r"(?:最终结算金额|结算总金额|最终结算价款|结算金额|结算总额|结算价款)"
+    r"[:：]?\s*[¥￥]*\s*([\d,]+(?:\.\d{1,2})?)"
+)
+
 # 金额：带货币标识或"元"，支持千分位/小数
+# 注意：OCR 文本里"金额"标签后面紧接的可能是发票号码（20 位）或银行流水号，
+# 因此所有金额取值都要过 _plausible_amount 值域校验，不能只靠正则边界。
 _AMOUNT_PATTERNS = [
     re.compile(
         r"(?:价税合计|含税合计|合计金额|含税金额|总金额)[\s\S]{0,40}?"
@@ -80,6 +88,50 @@ _AMOUNT_PATTERNS = [
     re.compile(r"(?:金额|价款|货款|总价|交易金额)[:：]?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:元|人民币)?"),
     re.compile(r"([\d,]+(?:\.\d{1,2})?)\s*元"),
 ]
+
+
+def _plausible_amount(raw: str | None) -> bool:
+    """金额值域校验：排除发票号/税号/银行流水这类长整数串。
+
+    含小数的一定是金额；纯整数且 ≥16 位视为单号（20 位数电票号、18 位税号、
+    16 位以上流水号），不是金额。
+    """
+    s = (raw or "").replace(",", "").strip()
+    if not s:
+        return False
+    return not ("." not in s and len(s) >= 16)
+
+# ---------- 银行回单版式（新版式：标签与值分行，"金额（小写）\n1,500,000.00"） ----------
+_RECEIPT_SMALL_AMOUNT = re.compile(
+    r"金额\s*[（(]\s*小写\s*[）)]\s*[:：]?\s*[¥￥]?\s*([\d,]+(?:\.\d{1,2})?)"
+)
+_RECEIPT_BIG_AMOUNT = re.compile(
+    r"金额\s*[（(]\s*大写\s*[）)]\s*[:：]?\s*([零壹贰叁肆伍陆柒捌玖拾佰仟万亿圆元角分整]{3,40})"
+)
+# 回单款项性质/摘要（用于区分货款、保证金、利息、退款）
+# 按优先级逐个匹配：摘要 > 款项性质 > 用途 > 附言 > 交易描述
+_SUMMARY_CONTEXT = re.compile(
+    r"(?:摘要|用途|交易描述|附言|款项性质|汇款用途)[:：]?\s*"
+    r"([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）()]{2,40}?)(?=\s*(?:\n|$))"
+)
+_SUMMARY_RULES = [
+    ("摘要", re.compile(r"摘要[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）() ]{2,30}?)(?=\s*(?:\n|$))")),
+    ("款项性质", re.compile(r"款项性质[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）() ]{2,30}?)(?=\s*(?:\n|$))")),
+    ("用途", re.compile(r"(?:用途|汇款用途)[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）() ]{2,30}?)(?=\s*(?:\n|$))")),
+    ("附言", re.compile(r"附言[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）() ]{2,30}?)(?=\s*(?:\n|$))")),
+    ("交易描述", re.compile(r"交易描述[:：]?\s*([\u4e00-\u9fa5A-Za-z0-9，,。.\-（）() ]{2,30}?)(?=\s*(?:\n|$))")),
+]
+
+# ---------- 电子发票版式（PDF 文本流为"标签块在前、值块在后"错位排列） ----------
+# 数电票号码固定 20 位纯数字；税号为 18 位含字母，不会误命中
+# OCR 常把长号码按 4 位一组断行，允许数字之间夹空白，取值时再去空白
+_INVOICE_NO_ANCHOR = re.compile(r"(?<![0-9])((?:[0-9]\s*){20})(?![0-9])")
+# 开票日期：2026年06月18日 / 2026 年 6 月 18 日
+_INVOICE_DATE_ANCHOR = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+# ¥ 前缀金额（价税合计 / 不含税金额 / 税额三类）
+_INVOICE_YUAN_AMOUNT = re.compile(r"[¥￥]\s*([\d,]+\.\d{2})")
+# 数值 token（明细区勾稽用）
+_NUMBER_TOKEN = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+\.\d+|\d+(?:\.\d+)?)(?![\d.])")
 
 # 船名：上下文锚定（结算单/货权转移单通常带"船名："，支持数字结尾如 海兴168）
 _VESSEL_CONTEXT = re.compile(
@@ -100,8 +152,10 @@ _MATERIAL_TON = re.compile(
     r"(?:吨|T|t)\s*([\u4e00-\u9fa5A-Za-z]{1,12}(?:粉|矿|钢|煤|油|砂))"
 )
 # 数量：上下文锚定 + 单位
+# 小数位限制 2 位：OCR 常把"9914.99 707.15"粘成"9914.99707.15"，
+# 若允许 3 位会吃成 9914.997
 _QUANTITY_CONTEXT = re.compile(
-    r"(?:数量|吨数|总数量|重量|净重)[:：]?[\s\S]{0,50}?([\d,]+(?:\.\d{1,3})?)\s*(?:吨|T|t|kg|KG|千克|件|个|张|份|批)?"
+    r"(?:数量|吨数|总数量|重量|净重)[:：]?[\s\S]{0,50}?([\d,]+(?:\.\d{1,2})?)\s*(?:吨|T|t|kg|KG|千克|件|个|张|份|批)?"
 )
 
 # 发票特征标记（用于触发发票专用提取）
@@ -114,12 +168,16 @@ _SELLER_CONTEXT = re.compile(
 )
 
 # ---------- 文件名字段提取（缺失补全） ----------
-# 合同号：SJWLXS（DD）-2026-YC0453 / SJWLCG（DD）-2026-0109 / CG20260801
+# 合同号：SJWLXS（DD）-2026-YC0453 / SJWLCG（DD）-2026-0109 / SOTC202605130002
+# 关键约束：编号中的 4 位数字必须是年份（19xx/20xx），否则纯哈希文件名
+# （如 ef252262087373843227213824214.pdf / db5670f42.jpg）会被抽成垃圾合同号。
 _FN_CONTRACT_NO = re.compile(
-    r"([A-Z]{2,10}(?:（DD）|\(DD\)|[-_])?[-_/]?\d{4}[-_/]?[A-Z]{0,6}\d{2,})|"
-    r"([A-Z]{2,6}\d{4,})",
+    r"([A-Z]{2,10}(?:（DD）|\(DD\)|[-_])?[-_/]?(?:19|20)\d{2}[-_/]?[A-Z]{0,6}\d{2,10})(?!\d)|"
+    r"([A-Z]{2,6}(?:19|20)\d{2}\d{0,10})(?!\d)",
     re.IGNORECASE,
 )
+# 纯哈希文件名（16 位以上连续十六进制串）：不参与合同号兜底
+_HASH_LIKE = re.compile(r"(?<![0-9a-z])[0-9a-f]{16,}(?![0-9a-z])", re.IGNORECASE)
 # 日期：2026-08-14 / 2026_08_14 / 026-08-14
 _FN_DATE = re.compile(r"(?<!\d)(\d{4})[-_.年](\d{1,2})[-_.月](\d{1,2})日?|(?<!\d)(\d{2,3})[-_.](\d{1,2})[-_.](\d{1,2})")
 # 船名：XXX船（文件名补全）
@@ -148,10 +206,12 @@ def _despaghettify(text: str) -> str:
     return "\n".join(out)
 
 
-# 页码/页眉噪声行：`1 / 10`、`第 1 页`、`- 2 -`、纯数字行
+# 页码/页眉噪声行：`1 / 10`、`第 1 页`、`- 2 -`、短纯数字行
+# 注意：4 位以上纯数字可能是正文数据（如发票数量 7996），只在文档首尾行按页码处理
 _PAGE_NOISE = re.compile(
-    r"^\s*(?:第\s*\d+\s*页|页\s*\d+|[-–—]?\s*\d+\s*/\s*\d+\s*[-–—]?|\d+\s*/\s*\d+|\d{1,4}|[-–—]\s*\d+\s*[-–—])\s*$"
+    r"^\s*(?:第\s*\d+\s*页|页\s*\d+|[-–—]?\s*\d+\s*/\s*\d+\s*[-–—]?|\d+\s*/\s*\d+|\d{1,3}|[-–—]\s*\d+\s*[-–—])\s*$"
 )
+_PAGE_NOISE_EDGE = re.compile(r"^\s*\d{4,5}\s*$")
 # 水印/页眉重复词（行首出现的固定弱语义词），连续多行重复才清洗
 _HEADER_NOISE = re.compile(
     r"^(仅供参考|仅供\s*内部参考|内部参考|内部资料|机密|秘密|草稿|DRAFT|CONFIDENTIAL|Copy|Page|页)\s*[\s\S]{0,30}$",
@@ -167,12 +227,17 @@ def clean_ocr_text(text: str) -> str:
     if not text:
         return ""
     text = _despaghettify(text)
+    src_lines = text.splitlines()
+    n_lines = len(src_lines)
     lines = []
-    for ln in text.splitlines():
+    for i, ln in enumerate(src_lines):
         st = ln.strip()
         if not st:
             continue
         if _PAGE_NOISE.match(st):
+            continue
+        # 4 位以上纯数字：正文里可能是数量/金额，只在文档首尾 3 行内按页码剔除
+        if (i < 3 or i >= n_lines - 3) and _PAGE_NOISE_EDGE.match(st):
             continue
         if _HEADER_NOISE.match(st):
             continue
@@ -279,38 +344,141 @@ def _invoice_seller_matcher(text: str):
 
 
 def _invoice_amount_matcher(text: str):
+    """发票价税合计：取所有 ¥ 金额中的最大值。
+
+    价税合计 = 不含税金额 + 税额，恒为票面 ¥ 金额的最大值；
+    只认带 ¥ 前缀的值，避免把明细区单价/数量/税率当金额。
+    """
     if not _INVOICE_MARKER.search(text):
         return None
+    yuan: list[tuple[float, str]] = []
+    for v in _INVOICE_YUAN_AMOUNT.findall(text):
+        if not _plausible_amount(v):
+            continue
+        try:
+            num = float(v.replace(",", ""))
+        except ValueError:
+            continue
+        yuan.append((num, v.replace(",", "")))
+    if yuan:
+        return max(yuan)[1], 0.95, "invoice_amount_yuan", 96.0, SOURCE_RULE
+    # 兜底：无 ¥ 前缀时取最大小数金额
     amounts: list[tuple[float, str]] = []
     for v in re.findall(r"\d[\d,]*\.\d{1,2}", text):
-        num = float(v.replace(",", ""))
+        if not _plausible_amount(v):
+            continue
+        try:
+            num = float(v.replace(",", ""))
+        except ValueError:
+            continue
         amounts.append((num, v.replace(",", "")))
     if amounts:
-        mx = max(amounts, key=lambda x: x[0])
-        return mx[1], 0.9, "invoice_amount", 96.0, SOURCE_RULE
+        return max(amounts)[1], 0.85, "invoice_amount_max", 90.0, SOURCE_RULE
+    return None
+
+
+def _invoice_no_matcher(text: str):
+    """发票号码：数电票固定 20 位纯数字（税号为 18 位含字母，不会误命中）。"""
+    if not _INVOICE_MARKER.search(text):
+        return None
+    m = _INVOICE_NO_ANCHOR.search(text)
+    if m:
+        digits = re.sub(r"\s+", "", m.group(1))
+        if len(digits) == 20:
+            return digits, 0.95, "invoice_no_anchor", 98.0, SOURCE_RULE
+    return None
+
+
+def _invoice_date_matcher(text: str):
+    """开票日期：票面第一处 YYYY年MM月DD日。"""
+    if not _INVOICE_MARKER.search(text):
+        return None
+    m = _INVOICE_DATE_ANCHOR.search(text)
+    if m:
+        return _norm_date(m.group(1), m.group(2), m.group(3)), 0.95, "invoice_date", 96.0, SOURCE_RULE
     return None
 
 
 def _invoice_quantity_matcher(text: str):
+    """发票数量：明细区用「数量 × 单价 ≈ 金额」勾稽求解。
+
+    发票文本流里数量、单价、金额、税额挤在一起且顺序不固定，
+    按位置取数会把不含税金额或单价小数当数量。
+    单价特征为小数位 >= 4，再用乘法勾稽锁定数量。
+    """
     if not _INVOICE_MARKER.search(text):
         return None
-    # 优先：数量/吨数上下文锚定（"数量 8000吨"）
-    m = _QUANTITY_CONTEXT.search(text)
+    idx = text.find("吨")
+    seg = text[idx: idx + 500] if idx >= 0 else text
+    tokens = _NUMBER_TOKEN.findall(seg)
+    if len(tokens) < 2:
+        return None
+    nums: list[float] = []
+    for t in tokens:
+        try:
+            nums.append(float(t.replace(",", "")))
+        except ValueError:
+            continue
+    price_tok = next((t for t in tokens if re.search(r"\.\d{4,}", t)), None)
+    if not price_tok:
+        return None
+    try:
+        price = float(price_tok.replace(",", ""))
+    except ValueError:
+        return None
+    if price <= 0:
+        return None
+    # 单价本身不能当"金额"参与勾稽：否则 v=1 时 1×单价 ≈ 单价 会巧合命中，
+    # 把发票数量抽成 1（下游发票实测踩过）。
+    others = [a for a in nums if a > 0 and abs(a - price) > 1e-6]
+    if not others:
+        return None
+    # 勾稽：对每个候选数量，找一个明细金额使 数量×单价 相对误差 < 1%
+    best: tuple[float, str] | None = None
+    for t in tokens:
+        if t == price_tok:
+            continue
+        try:
+            v = float(t.replace(",", ""))
+        except ValueError:
+            continue
+        if v <= 0 or abs(v - price) < 1e-9:
+            continue
+        gaps = [abs(v * price - a) / a for a in others]
+        if not gaps:
+            continue
+        gap = min(gaps)
+        if gap >= 0.01:
+            continue
+        if best is None or gap < best[0]:
+            best = (gap, t.replace(",", ""))
+    if best:
+        return best[1], 0.9, "invoice_quantity_math", 92.0, SOURCE_RULE
+    return None
+
+
+def _receipt_small_amount_matcher(text: str):
+    """银行回单：标签与值分行的「金额（小写）」版式。"""
+    m = _RECEIPT_SMALL_AMOUNT.search(text)
     if m:
-        return _norm_amount(m.group(1)), 0.85, "invoice_quantity", 86.0, SOURCE_RULE
-    # 兜底：吨后 单价(3位以上小数) 之后的第一个数值（发票值区版式）
-    ton_idx = text.rfind("吨")
-    if ton_idx >= 0:
-        tail = text[ton_idx:]
-        nums = re.findall(r"\d[\d,]*\.?\d*", tail)
-        unit_idx = None
-        for i, n in enumerate(nums):
-            if re.search(r"\.\d{3,}", n):
-                unit_idx = i
-        if unit_idx is not None and unit_idx + 1 < len(nums):
-            qty = nums[unit_idx + 1].replace(",", "")
-            if len(qty) <= 10:
-                return qty, 0.8, "invoice_quantity", 86.0, SOURCE_RULE
+        return m.group(1).replace(",", ""), 0.96, "receipt_amount_small", 97.0, SOURCE_RULE
+    return None
+
+
+def _receipt_summary_matcher(text: str):
+    """回单摘要 / 用途 / 交易描述（供款项性质分类）。
+
+    按优先级取：摘要（真正的款项性质）> 款项性质 > 用途 > 附言 > 交易描述。
+    不能直接用最靠前的标签，回单里"交易描述"排在"摘要"前面，先命中会拿到
+    "大额汇入"这类交易类型而非款项性质。
+    """
+    for _, pat in _SUMMARY_RULES:
+        m = pat.search(text)
+        if not m:
+            continue
+        v = m.group(1).strip().rstrip("，,。.")
+        if v and v not in ("明细标注", "备注"):
+            return v, 0.85, "receipt_summary", 88.0, SOURCE_RULE
     return None
 
 
@@ -331,10 +499,23 @@ def _date_generic_m(text: str):
 def _amount_matcher(pattern: re.Pattern, conf: float, rule: str, prio: float):
     def _m(text: str):
         m = pattern.search(text)
-        if m:
+        if m and _plausible_amount(m.group(1)):
             return _norm_amount(m.group(1)), conf, rule, prio, SOURCE_RULE
         return None
     return _m
+
+
+def _settlement_amount_matcher(text: str):
+    """结算单：优先认「最终结算金额 / 结算总金额」标签。
+
+    结算单正文里同时有「最终结算金额 7,922,962.05」「已收货款 7,990,545.00」
+    「应补货款 -67,582.95」多个金额，靠"第一个金额"或"最大值"都会抽错。
+    扫描件还会写成「¥¥7,882,417.05」（OCR 把符号重影成两个），故前缀允许重复。
+    """
+    m = _SETTLE_AMOUNT_ANCHOR.search(text)
+    if m and _plausible_amount(m.group(1)):
+        return _norm_amount(m.group(1)), 0.97, "settlement_amount_anchor", 99.0, SOURCE_RULE
+    return None
 
 
 def _quantity_context_m(text: str):
@@ -380,6 +561,21 @@ def _vessel_quoted_m(text: str):
 
 
 # 文件名专用 matcher（规范化输出 + 至少含一个汉字，避免数字误判）
+def _filename_contract_matcher(stem: str):
+    """文件名合同号：排除纯哈希文件名，避免把哈希串当编号。"""
+    if _HASH_LIKE.search(stem):
+        return None
+    m = _FN_CONTRACT_NO.search(stem)
+    if not m:
+        return None
+    for g in range(1, len(m.groups()) + 1):
+        v = m.group(g)
+        if v:
+            # 统一全角括号，去掉多余空白
+            return re.sub(r"\s+", "", v).upper(), 0.6, "filename_contract", 60.0, SOURCE_FILENAME
+    return None
+
+
 def _filename_date_matcher(text: str):
     m = _FN_DATE.search(text)
     if not m:
@@ -422,6 +618,7 @@ _FIELD_RULES: dict[str, list] = {
         _invoice_seller_matcher,
     ],
     "date": [
+        _invoice_date_matcher,
         _date_context_m,
         _date_generic_m,
     ],
@@ -433,14 +630,22 @@ _FIELD_RULES: dict[str, list] = {
         _m_group(_ORDER_NO, 1, 0.85, "order_context", 100.0),
     ],
     "invoice_no": [
+        _invoice_no_matcher,
         _m_group(_INVOICE_NO, 1, 0.85, "invoice_context", 100.0),
     ],
     "amount": [
+        # 结算单专用锚点放最前：正文里同时有结算额、已收/已付货款、应补差额，
+        # 通用金额规则会先抽到"已收货款"或差额
+        _settlement_amount_matcher,
         _invoice_amount_matcher,
+        _receipt_small_amount_matcher,
         _amount_matcher(_AMOUNT_PATTERNS[0], 0.95, "amount_total", 95.0),
         _amount_matcher(_AMOUNT_PATTERNS[1], 0.9, "amount_currency", 90.0),
         _amount_matcher(_AMOUNT_PATTERNS[2], 0.75, "amount_context", 75.0),
         _amount_matcher(_AMOUNT_PATTERNS[3], 0.6, "amount_yuan", 60.0),
+    ],
+    "summary": [
+        _receipt_summary_matcher,
     ],
     "vessel": [
         _vessel_context_m,
@@ -462,7 +667,7 @@ _FIELD_RULES: dict[str, list] = {
 # 文件名补全字段：缺失时从文件名提取（低优先级，source=FILENAME）
 _FILENAME_RULES: dict[str, list] = {
     "contract_no": [
-        _m_first_named(_FN_CONTRACT_NO, 0.55, "filename_contract", 60.0),
+        _filename_contract_matcher,
     ],
     "date": [
         _filename_date_matcher,
@@ -477,7 +682,7 @@ _FILENAME_RULES: dict[str, list] = {
 
 # 字段展示顺序（保持历史顺序稳定）
 _FIELD_ORDER = ["company", "seller", "date", "contract_no", "contract_suffix", "order_no", "invoice_no",
-                "amount", "vessel", "material", "quantity"]
+                "amount", "summary", "vessel", "material", "quantity"]
 
 
 class FieldExtractor:
@@ -544,24 +749,7 @@ class FieldExtractor:
 
         # 3) 字段缺失补全（从文件名）
         if filename:
-            stem = str(filename).strip()
-            for fname, rules in _FILENAME_RULES.items():
-                if fname in resolved:
-                    continue
-                for m in rules:
-                    try:
-                        hit = m(stem)
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("文件名规则异常 field=%s: %s", fname, e)
-                        continue
-                    if not hit:
-                        continue
-                    value, conf, rule, prio, source = hit
-                    v = str(value).strip()
-                    if v:
-                        resolved[fname] = FieldCandidate(v, conf, source, rule, prio)
-                        logger.info("字段缺失补全（文件名）: %s=%s", fname, v)
-                    break
+            self._fill_from_filename(str(filename).strip(), resolved)
 
         # 4) 组装输出（保持字段顺序）
         out: list[ExtractedField] = []
@@ -578,6 +766,41 @@ class FieldExtractor:
             f"（{len(self.last_conflicts)} 处冲突）" if self.last_conflicts else "",
         )
         return out
+
+    # ---------- 文件名级抽取（零解析成本） ----------
+    def _fill_from_filename(self, stem: str, resolved: dict[str, FieldCandidate]) -> None:
+        """用文件名补齐缺失字段（只填尚未解析出的字段）。"""
+        if not stem:
+            return
+        for fname, rules in _FILENAME_RULES.items():
+            if fname in resolved:
+                continue
+            for m in rules:
+                try:
+                    hit = m(stem)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("文件名规则异常 field=%s: %s", fname, e)
+                    continue
+                if not hit:
+                    continue
+                value, conf, rule, prio, source = hit
+                v = str(value).strip()
+                if v:
+                    resolved[fname] = FieldCandidate(v, conf, source, rule, prio)
+                    logger.info("字段缺失补全（文件名）: %s=%s", fname, v)
+                break
+
+    def extract_filename_only(self, filename: str) -> list[ExtractedField]:
+        """只跑文件名规则（不解析内容），供文件名规则命中的快速通道补字段。"""
+        self.last_conflicts = []
+        resolved: dict[str, FieldCandidate] = {}
+        self._fill_from_filename(str(filename or "").strip(), resolved)
+        return [
+            ExtractedField(name=fname, value=c.value, confidence=c.confidence,
+                           source=c.source, rule=c.rule)
+            for fname in _FIELD_ORDER
+            if (c := resolved.get(fname))
+        ]
 
 
 # 全局单例

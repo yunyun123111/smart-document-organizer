@@ -72,6 +72,33 @@ class TestFieldExtractor:
         assert f is not None
         assert f.value == "8800"
 
+    def test_settlement_amount_anchor_prefers_final_settlement(self):
+        """结算单正文有结算额、已收货款、应补差额三个金额，必须认「最终结算金额」。"""
+        text = (
+            "结算单\n"
+            "最终结算金额\n7,922,962.05\n元\n"
+            "已收货款\n7,990,545.00\n"
+            "回款后我司应退贵司：67,582.95\n"
+        )
+        fields = self.fx.extract(text)
+        f = self._get(fields, "amount")
+        assert f is not None
+        assert f.value == "7922962.05"
+        assert f.rule == "settlement_amount_anchor"
+
+    def test_settlement_amount_anchor_tolerates_repeated_currency_symbol(self):
+        """扫描件 OCR 会把 ¥ 重影成 ¥¥¥，锚点仍要认到结算总金额。"""
+        text = (
+            "合同数量\n10000湿吨\n合同单价\n¥¥¥795\n"
+            "实际提货数量：\n9914.99湿吨\n结算总金额：\n¥¥¥7,882,417.05\n"
+            "贵司已付货款：\n¥¥¥7,950,000.00\n贵司应补货款：\n¥-67,582.95\n"
+        )
+        fields = self.fx.extract(text)
+        f = self._get(fields, "amount")
+        assert f is not None
+        assert f.value == "7882417.05"
+        assert f.rule == "settlement_amount_anchor"
+
     def test_contract_full_scenario(self):
         text = (
             "销售合同\n"

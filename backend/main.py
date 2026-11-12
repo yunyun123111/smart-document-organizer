@@ -25,6 +25,7 @@ from backend.api.excel_sources import router as excel_sources_router
 from backend.api.filename_rules import router as filename_rules_router
 from backend.api.logs import router as logs_router
 from backend.api.processing import router as processing_router
+from backend.api.reconciliation import router as reconciliation_router
 from backend.api.recycle_bin import router as recycle_bin_router
 from backend.api.review import router as review_router
 from backend.api.rule_simulator import router as rule_simulator_router
@@ -85,6 +86,7 @@ app.include_router(samples_router)
 app.include_router(settings_router)
 app.include_router(backup_router)
 app.include_router(business_archives_router)
+app.include_router(reconciliation_router)
 app.include_router(logs_router)
 
 

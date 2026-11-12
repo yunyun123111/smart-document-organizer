@@ -99,6 +99,7 @@ onBeforeUnmount(() => {
         <el-sub-menu index="data-group">
           <template #title>数据与分析</template>
           <el-menu-item index="/"><span>数据看板</span></el-menu-item>
+          <el-menu-item index="/reconciliation"><span>业务对账</span></el-menu-item>
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="lib-group">
@@ -143,6 +144,7 @@ onBeforeUnmount(() => {
         <el-sub-menu index="data-group">
           <template #title>数据与分析</template>
           <el-menu-item index="/"><span>数据看板</span></el-menu-item>
+          <el-menu-item index="/reconciliation"><span>业务对账</span></el-menu-item>
           <el-menu-item index="/logs"><span>操作日志</span></el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="lib-group">

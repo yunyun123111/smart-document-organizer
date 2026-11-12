@@ -23,7 +23,7 @@ from backend.services.confidence_service import (
     ConfidenceResult,
     confidence_service,
 )
-from backend.services.field_extractor import field_extractor
+from backend.services.field_extractor import SOURCE_FILENAME, field_extractor
 from backend.services.filename_rule_service import filename_rule_service
 from backend.services.ocr_cleaner import get_known_companies, ocr_cleaner
 from backend.services.ocr_service import ocr_service
@@ -103,6 +103,13 @@ class ClassifierService:
                 score=0.99, decision=DECISION_AUTO, components={"filename": 1.0}
             )
             result.decision = DECISION_AUTO
+            # 文件名级字段兜底（零解析成本）：合同号 / 日期 / 船名 / 物料。
+            # 扫描件合同 PDF 没有文本层，缺了这一步会导致合同号为空、
+            # 对账时归不到业务线（MISSING_DOC 误报）。
+            for f in field_extractor.extract_filename_only(path.name):
+                result.fields[f.name] = (f.value, f.confidence, f.source or SOURCE_FILENAME)
+                result.field_values[f.name] = f.value
+            result.field_conflicts = [c.__dict__ for c in field_extractor.last_conflicts]
             logger.info("文件名规则命中 %s -> %s（直接归档）", path.name, fn_match.category_path)
             return result
 
@@ -157,7 +164,23 @@ class ClassifierService:
                 logger.warning("Excel 登记表匹配异常（已跳过，不影响识别）: %s", e)
                 em = None
             if em and em.matched:
+                # 台账的金额/数量口径是「合同口径」（合同金额、合同数量），
+                # 而结算单/发票/回单上的金额是单据自身金额（结算金额、票面
+                # 价税合计、实付金额），两者不是一回事。用台账行覆盖会把
+                # 结算单金额写成合同金额（7990500 vs 结算 7922962.05），
+                # 导致对账金额勾稽全错 —— 所以只对合同类单据允许覆盖。
+                name_upper = path.name.upper()
+                is_contract = (
+                    "合同" in path.name
+                    or "协议" in path.name
+                    or name_upper.startswith(
+                        ("HSYCCG", "HSYCXS", "SJWLCG", "SJWLXS", "BOTC", "SOTC")
+                    )
+                )
+                ledger_only = set() if is_contract else {"amount", "quantity"}
                 for k, v in em.fields.items():
+                    if k in ledger_only and result.field_values.get(k):
+                        continue
                     result.field_values[k] = v
                     result.fields[k] = (v, 1.0, "EXCEL")
                 result.excel_match = em.to_dict()

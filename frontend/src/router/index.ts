@@ -22,6 +22,12 @@ const router = createRouter({
       meta: { title: '待人工确认' },
     },
     {
+      path: '/reconciliation',
+      name: 'reconciliation',
+      component: () => import('@/views/ReconciliationView.vue'),
+      meta: { title: '业务对账' },
+    },
+    {
       path: '/library',
       name: 'library',
       component: () => import('@/views/LibraryView.vue'),

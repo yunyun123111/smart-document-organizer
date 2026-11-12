@@ -269,7 +269,10 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+# 无迁移记录的老库按此版本视为"历史结构已齐"（v2~v4 的建索引语句依赖旧表列，
+# 不在最老的库上重跑），只补 v5 及之后新增的迁移
+_LEGACY_BASE_VERSION = 4
 
 # 迁移列表：[(version, name, upgrade_fn)]
 # upgrade_fn(db: Session) -> None，须幂等。
@@ -401,11 +404,47 @@ def _migrate_create_fingerprints_and_anomalies(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_reconciliation(db: Session) -> None:
+    """V6-01: 新增 reconciliation_reports 表（业务线台账自动对账结果）。幂等。
+
+    一条业务线一行，差异明细存 report_json；不改 business_records 主键。
+    """
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS reconciliation_reports ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "business_no VARCHAR(255) NOT NULL, "
+        "ledger_sheet VARCHAR(64) NOT NULL DEFAULT '', "
+        "up_contract_no VARCHAR(255) NOT NULL DEFAULT '', "
+        "down_contract_no VARCHAR(255) NOT NULL DEFAULT '', "
+        "up_settlement NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "down_settlement NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "interest_receivable NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "interest_received NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "status VARCHAR(16) NOT NULL DEFAULT 'ok', "
+        "diff_count INTEGER NOT NULL DEFAULT 0, "
+        "report_json TEXT NOT NULL DEFAULT '{}', "
+        "checked_at DATETIME NOT NULL, "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_reconciliation_business_no "
+        "ON reconciliation_reports (business_no)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_reconciliation_reports_status "
+        "ON reconciliation_reports (status)"
+    ))
+    _record_migration(db, 6, "create reconciliation reports")
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
     (3, "create excel_sources", _migrate_create_excel_sources),
     (4, "create business_archive", _migrate_create_business_archive),
     (5, "create fingerprints and anomalies", _migrate_create_fingerprints_and_anomalies),
+    (6, "create reconciliation reports", _migrate_create_reconciliation),
 ]
 
 
@@ -452,19 +491,20 @@ def run_migrations(db: Session) -> None:
 
     - 新库（无业务表）：直接标记 fresh baseline = SCHEMA_VERSION，跳过全部迁移
       （create_all 已建出最新结构）
-    - 老库（有业务表但无迁移记录）：标记 legacy baseline = SCHEMA_VERSION - 1，
-      执行最后一个增量迁移补齐到最新
+    - 新库（无业务表）：直接标记 fresh baseline = SCHEMA_VERSION，跳过全部迁移
+      （create_all 已建出最新结构）
+    - 老库（有业务表但无迁移记录）：视为 v4 结构（v2~v4 迁移在更早的库上都已应用过，
+      且它们的建索引语句依赖已存在的列），补记 v2~v4 后执行 v5 及之后的迁移
     - 之后每次升级：SCHEMA_VERSION +1 + MIGRATIONS 追加，老库执行新迁移，新库跳过
     """
     _ensure_schema_migrations(db)
     applied = _applied_versions(db)
     if not applied:
         if _has_business_tables(db):
-            base = SCHEMA_VERSION - 1
+            base = _LEGACY_BASE_VERSION
             _record_migration(db, 0, "legacy baseline")
-            logger.info("数据库迁移：检测到既有库，标记 legacy baseline=%d", base)
-            # 持久化记录逻辑已应用的历史迁移：仅靠内存 applied 集合跳过的话，
-            # 下次运行会因记录缺失而重复执行历史迁移（幂等被破坏）
+            logger.info("数据库迁移：检测到既有库，标记 legacy baseline=v%d，补齐后续迁移", base)
+            # 持久化记录已应用的历史迁移，避免下次因记录缺失而重复执行
             for v, name, _ in MIGRATIONS:
                 if v <= base:
                     _record_migration(db, v, name)
