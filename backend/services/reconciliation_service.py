@@ -90,6 +90,18 @@ ROLE_LABELS = {
     ROLE_PAYMENT_RECEIPT: "收付款回单",
 }
 
+# ---- 核对范围（业务口径，见 docs/决策-对账核对范围.md）----
+# 上游核「结算 / 发票 / 付款」三者，下游核「结算 / 发票」两项。
+# 合同与货权单仍进 2×5 矩阵展示资料齐套情况，但不产生差异；
+# 下游回款不在此处核对（回款明细由人工表单独提供）。
+_CHECKED_CELLS: frozenset[tuple[str, str]] = frozenset({
+    ("up", ROLE_SETTLEMENT),
+    ("up", ROLE_INVOICE),
+    ("up", ROLE_PAYMENT_RECEIPT),
+    ("down", ROLE_SETTLEMENT),
+    ("down", ROLE_INVOICE),
+})
+
 DIRECTION_UP = "up"
 DIRECTION_DOWN = "down"
 DIRECTION_UNKNOWN = "unknown"
@@ -1128,11 +1140,12 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
             document_ids=[d.document_id],
         ))
 
-    # ---- R1 单据齐套（2×5，缺件不豁免）----
+    # ---- R1 核对项齐套（上游：结算/发票/付款；下游：结算/发票）----
     for direction in (DIRECTION_UP, DIRECTION_DOWN):
         for role in RECON_ROLES:
             cell_docs = by_cell.get((direction, role), [])
             cell_docs_amt = by_cell_amt.get((direction, role), [])
+            checked = (direction, role) in _CHECKED_CELLS
             candidates = [
                 d.document_id for d in docs
                 if d.role == role and d.direction == DIRECTION_UNKNOWN
@@ -1148,7 +1161,7 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
                 candidate_count=len(candidates),
             ))
             extras = [d for d in cell_docs if d.nature != NATURE_PAYMENT]
-            if extras:
+            if checked and extras:
                 labels = "、".join(
                     f"{'保证金' if d.nature == NATURE_DEPOSIT else '退款'} "
                     f"{fmt_amount(d.amount or _ZERO)}"
@@ -1166,7 +1179,8 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
                 ))
             if cell_docs:
                 # 有单据但金额识别失败
-                if role in (ROLE_SETTLEMENT, ROLE_INVOICE, ROLE_PAYMENT_RECEIPT) and amount is None:
+                if (checked and role in (ROLE_SETTLEMENT, ROLE_INVOICE, ROLE_PAYMENT_RECEIPT)
+                        and amount is None):
                     diffs.append(DiffItem(
                         type=DIFF_UNPARSED_AMOUNT,
                         severity=SEVERITY_WARNING,
@@ -1175,6 +1189,10 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
                         message="文档已归档但金额字段为空，无法参与金额勾稽，请补录",
                         document_ids=[d.document_id for d in cell_docs],
                     ))
+                continue
+            if not checked:
+                # 合同 / 货权单 / 下游回款不在核对范围内：
+                # 只在矩阵里展示份数与金额，缺件不再算差异
                 continue
             diffs.append(DiffItem(
                 type=DIFF_MISSING_DOC,
@@ -1196,6 +1214,16 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
 
     # ---- R2 上游三单一致：结算 ↔ 发票 ↔ 付款 ---- 
     up_settle = biz.up_settlement
+    # 结算单识别金额 ↔ 台账采购结算：先确认「结算数字准不准」
+    up_settle_doc = _sum_amount(by_cell_amt.get((DIRECTION_UP, ROLE_SETTLEMENT), []))
+    up_settle_docs = [d.document_id for d in by_cell.get((DIRECTION_UP, ROLE_SETTLEMENT), [])]
+    if up_settle is not None and up_settle_doc is not None:
+        item = _diff_amount("上游结算单金额与台账采购结算金额不符", up_settle, up_settle_doc,
+                            DIRECTION_UP, ROLE_SETTLEMENT, up_settle_docs,
+                            f"结算单识别值 {fmt_amount(up_settle_doc)} / 台账 {fmt_amount(up_settle)}，"
+                            "需确认以哪一侧为准")
+        if item:
+            diffs.append(item)
     up_invoice = _sum_amount(by_cell_amt.get((DIRECTION_UP, ROLE_INVOICE), []))
     up_pay = biz.pay_amount
     up_inv_docs = [d.document_id for d in by_cell.get((DIRECTION_UP, ROLE_INVOICE), [])]
@@ -1220,66 +1248,52 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
     # 上游付款回单（凭证）↔ 台账支付金额：两者应一致；少于此额为部分付款，多则为超额
     up_pay_docs = by_cell.get((DIRECTION_UP, ROLE_PAYMENT_RECEIPT), [])
     up_pay_doc_sum = _sum_goods(by_cell_amt.get((DIRECTION_UP, ROLE_PAYMENT_RECEIPT), []))
-    if up_pay is not None and up_pay_doc_sum is not None:
-        delta = up_pay_doc_sum - up_pay
+    if up_pay is not None:
+        # 一份货款付款回单都没有时 _sum_goods 返回 None，按 0 参与比较：
+        # 上游 795 万付款凭证确实缺失（当前只有退款回单），按 INFO 标注待补，
+        # 不把资料缺口升级成状态告警（你说的"付款先这样，后面用会计账单"）。
+        covered = up_pay_doc_sum if up_pay_doc_sum is not None else _ZERO
+        delta = covered - up_pay
         if abs(delta) > RECON_TOLERANCE:
+            missing_all = up_pay_doc_sum is None
             diffs.append(DiffItem(
                 type=DIFF_AMOUNT_MISMATCH,
-                severity=SEVERITY_CRITICAL if delta > 0 else SEVERITY_WARNING,
-                title="上游付款回单合计与台账支付金额不符",
+                severity=SEVERITY_INFO if missing_all else (
+                    SEVERITY_CRITICAL if delta > 0 else SEVERITY_WARNING),
+                title=("上游付款凭证未提供（台账已登记付款）" if missing_all
+                       else "上游付款回单合计与台账支付金额不符"),
                 direction=DIRECTION_UP, role=ROLE_PAYMENT_RECEIPT,
-                expected=fmt_amount(up_pay), actual=fmt_amount(up_pay_doc_sum),
+                expected=fmt_amount(up_pay), actual=fmt_amount(covered),
                 delta=fmt_amount(delta),
-                message="回单合计超过台账付款额" if delta > 0 else "回单未覆盖全部付款，可能分次付款",
+                message=(f"台账付款 {fmt_amount(up_pay)} 尚无货款付款回单"
+                         "（当前仅有退款/保证金等非货款凭证），待补付款凭证或财务会计账单后核对"
+                         if missing_all else
+                         ("回单合计超过台账付款额" if delta > 0 else "回单未覆盖全部付款，可能分次付款")),
                 document_ids=[d.document_id for d in up_pay_docs],
             ))
 
-    # ---- R3 下游三单一致：结算 ↔ 发票 ↔ 回款 ---- 
+    # ---- R3 下游两项一致：结算 ↔ 发票 ---- 
+    # 下游结算要核三件事：① 数字准不准（↔ 台账）；② 是否 = 上游结算 + 利息（R4）；
+    # ③ 与发票是否相符。下游回款不在核对范围（回款明细由人工表单独提供）。
     down_settle = biz.down_settlement
+    down_settle_doc = _sum_amount(by_cell_amt.get((DIRECTION_DOWN, ROLE_SETTLEMENT), []))
+    down_settle_docs = [d.document_id for d in by_cell.get((DIRECTION_DOWN, ROLE_SETTLEMENT), [])]
+    if down_settle is not None and down_settle_doc is not None:
+        item = _diff_amount("下游结算单金额与台账销售结算金额不符", down_settle, down_settle_doc,
+                            DIRECTION_DOWN, ROLE_SETTLEMENT, down_settle_docs,
+                            f"结算单识别值 {fmt_amount(down_settle_doc)} / 台账 {fmt_amount(down_settle)}，"
+                            "需确认以哪一侧为准")
+        if item:
+            diffs.append(item)
     down_invoice = _sum_amount(by_cell_amt.get((DIRECTION_DOWN, ROLE_INVOICE), []))
-    down_receipt = biz.receipt_amount
     down_inv_docs = [d.document_id for d in by_cell.get((DIRECTION_DOWN, ROLE_INVOICE), [])]
     if down_settle is not None and down_invoice is not None:
         item = _diff_amount("下游发票金额与销售结算金额不符", down_settle, down_invoice,
                             DIRECTION_DOWN, ROLE_INVOICE, down_inv_docs)
         if item:
             diffs.append(item)
-    if down_settle is not None and down_receipt is not None:
-        # 台账内部：已回款额与结算额的差额=尚未回款，仅提示不判错
-        delta = down_receipt - down_settle
-        if abs(delta) > RECON_TOLERANCE:
-            diffs.append(DiffItem(
-                type=DIFF_AMOUNT_MISMATCH, severity=SEVERITY_INFO,
-                title="下游回款金额与销售结算金额存在差额（尚未回全）",
-                direction=DIRECTION_DOWN, role=ROLE_PAYMENT_RECEIPT,
-                expected=fmt_amount(down_settle), actual=fmt_amount(down_receipt),
-                delta=fmt_amount(delta),
-                message=f"台账回款 {fmt_amount(down_receipt)} / 销售结算 {fmt_amount(down_settle)}，差额 {fmt_amount(delta)}",
-            ))
-
-    # 下游收款回单（凭证）↔ 台账回款金额 + 实收利息
-    #
-    # 台账「回款额」登记的是本金，客户实付时连带利息一起打款，
-    # 所以回单合计应与「回款 + 实收利息」比，而不是只比本金
-    # （6,757,500 + 40,545 = 6,798,045 正好等于三张回款回单）。
-    down_receipt_docs = by_cell.get((DIRECTION_DOWN, ROLE_PAYMENT_RECEIPT), [])
-    down_receipt_sum = _sum_goods(by_cell_amt.get((DIRECTION_DOWN, ROLE_PAYMENT_RECEIPT), []))
-    expected_receipt = down_receipt
-    if expected_receipt is not None and biz.interest_received is not None:
-        expected_receipt = expected_receipt + biz.interest_received
-    if expected_receipt is not None and down_receipt_sum is not None:
-        delta = down_receipt_sum - expected_receipt
-        if abs(delta) > RECON_TOLERANCE:
-            diffs.append(DiffItem(
-                type=DIFF_AMOUNT_MISMATCH,
-                severity=SEVERITY_CRITICAL if delta > 0 else SEVERITY_WARNING,
-                title="下游收款回单合计与台账回款金额不符",
-                direction=DIRECTION_DOWN, role=ROLE_PAYMENT_RECEIPT,
-                expected=fmt_amount(expected_receipt), actual=fmt_amount(down_receipt_sum),
-                delta=fmt_amount(delta),
-                message="回单合计超过台账回款额（含利息）" if delta > 0 else "回单未覆盖全部回款，可能分次回款",
-                document_ids=[d.document_id for d in down_receipt_docs],
-            ))
+    # 下游回款（收付款回单）不在核对范围：回款明细由人工表单独提供。
+    # 矩阵里仍展示回单份数与合计，但不再产生「回款 vs 结算」类差异。
 
     # ---- R4 跨端利息：下游结算 − 上游结算 = 应收利息 ----
     # 台账实际存在"应收已登记、尚未收全"的业务线：差额可能等于 R（应收）

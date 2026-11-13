@@ -28,6 +28,9 @@ from backend.services.reconciliation_service import (
     ROLE_INVOICE,
     ROLE_CARGO_RIGHT,
     ROLE_SETTLEMENT,
+    ROLE_PAYMENT_RECEIPT,
+    NATURE_REFUND,
+    NATURE_PAYMENT,
     check_business,
     assign_documents,
     contract_variants,
@@ -333,11 +336,21 @@ def _diffs_for(biz: LedgerBusiness, docs: list[DocRecord] | None = None):
     return diffs, matrix, unlinked
 
 
-def test_empty_library_reports_ten_missing_cells(loaded):
+def test_empty_library_reports_five_missing_cells(loaded):
+    """核对范围：上游 3 类 + 下游 2 类 = 5 个核对项缺件。
+
+    合同、货权单、下游回款只进矩阵展示，不再报缺件。
+    """
     diffs, matrix, _ = _diffs_for(loaded[0])
     assert len(matrix) == 10
     assert all(cell.count == 0 for cell in matrix)
-    assert len([d for d in diffs if d.type == DIFF_MISSING_DOC]) == 10
+    missing = [d for d in diffs if d.type == DIFF_MISSING_DOC]
+    assert len(missing) == 5
+    assert {(d.direction, d.role) for d in missing} == {
+        (DIRECTION_UP, ROLE_SETTLEMENT), (DIRECTION_UP, ROLE_INVOICE),
+        (DIRECTION_UP, ROLE_PAYMENT_RECEIPT),
+        (DIRECTION_DOWN, ROLE_SETTLEMENT), (DIRECTION_DOWN, ROLE_INVOICE),
+    }
 
 
 def test_interest_matches_receivable(loaded):
@@ -390,6 +403,82 @@ def test_doc_without_contract_no_is_unlinked(loaded):
                       role=ROLE_INVOICE, direction="unknown")]
     diffs, _, unlinked = _diffs_for(loaded[0], docs)
     assert 9 in unlinked
+
+
+# ---------------- 核对范围（上游三项 / 下游两项） ----------------
+
+def test_contract_and_cargo_missing_not_reported(loaded):
+    """合同、货权单不在核对范围：缺件只进矩阵，不出差异。"""
+    diffs, matrix, _ = _diffs_for(loaded[0])
+    missing = {(d.direction, d.role) for d in diffs if d.type == DIFF_MISSING_DOC}
+    assert (DIRECTION_UP, "contract") not in missing
+    assert (DIRECTION_DOWN, "contract") not in missing
+    assert (DIRECTION_UP, ROLE_CARGO_RIGHT) not in missing
+    assert (DIRECTION_DOWN, ROLE_CARGO_RIGHT) not in missing
+    # 矩阵仍然是 2×5，资料齐套情况照常展示
+    assert len(matrix) == 10
+
+
+def test_up_settlement_doc_mismatch_is_critical(loaded):
+    """上游结算单识别金额 ≠ 台账采购结算 → CRITICAL（数字准不准）。"""
+    biz = loaded[0]   # up_settlement = 1,000,000
+    docs = [DocRecord(document_id=11, filename="采购结算单.pdf", document_type="结算单",
+                      contract_no="HSYCCG-0001", amount=Decimal("990000"),
+                      direction=DIRECTION_UP, role=ROLE_SETTLEMENT)]
+    diffs, _, _ = _diffs_for(biz, docs)
+    items = [d for d in diffs
+             if d.type == DIFF_AMOUNT_MISMATCH and d.role == ROLE_SETTLEMENT
+             and d.direction == DIRECTION_UP]
+    assert len(items) == 1
+    assert items[0].severity == "CRITICAL"
+
+
+def test_down_settlement_doc_mismatch_is_critical(loaded):
+    """下游结算单识别金额 ≠ 台账销售结算 → CRITICAL。"""
+    biz = loaded[0]   # down_settlement = 1,018,000
+    docs = [DocRecord(document_id=12, filename="销售结算单.pdf", document_type="结算单",
+                      contract_no="HSYCXS-0001", amount=Decimal("1010000"),
+                      direction=DIRECTION_DOWN, role=ROLE_SETTLEMENT)]
+    diffs, _, _ = _diffs_for(biz, docs)
+    items = [d for d in diffs
+             if d.type == DIFF_AMOUNT_MISMATCH and d.role == ROLE_SETTLEMENT
+             and d.direction == DIRECTION_DOWN]
+    assert len(items) == 1
+    assert items[0].severity == "CRITICAL"
+
+
+def test_upstream_refund_only_is_info_not_warning(loaded):
+    """上游只有退款回单、没有货款回单：标注为「凭证未提供」，只给 INFO。"""
+    biz = loaded[0]   # pay_amount = 1,000,000
+    docs = [DocRecord(document_id=13, filename="退款回单.pdf", document_type="银行回单",
+                      contract_no="HSYCCG-0001", amount=Decimal("18000"),
+                      direction=DIRECTION_UP, role=ROLE_PAYMENT_RECEIPT,
+                      nature=NATURE_REFUND)]
+    diffs, _, _ = _diffs_for(biz, docs)
+    items = [d for d in diffs
+             if d.type == DIFF_AMOUNT_MISMATCH and d.direction == DIRECTION_UP
+             and d.role == ROLE_PAYMENT_RECEIPT]
+    # 两条：① 该回单是非货款款项（退款）② 货款付款凭证未提供
+    assert len(items) == 2
+    assert all(d.severity == "INFO" for d in items)
+    target = next(d for d in items if "凭证未提供" in d.title)
+    assert target.severity == "INFO"
+
+
+def test_down_payment_not_checked_but_still_in_matrix(loaded):
+    """下游回款不在核对范围：回单合计对不上也不出差异，矩阵照常展示。"""
+    biz = loaded[0]   # receipt_amount = 1,018,000
+    docs = [DocRecord(document_id=14, filename="回款回单.pdf", document_type="银行回单",
+                      contract_no="HSYCXS-0001", amount=Decimal("500000"),
+                      direction=DIRECTION_DOWN, role=ROLE_PAYMENT_RECEIPT,
+                      nature=NATURE_PAYMENT)]
+    diffs, matrix, _ = _diffs_for(biz, docs)
+    assert not [d for d in diffs
+                if d.direction == DIRECTION_DOWN and d.role == ROLE_PAYMENT_RECEIPT]
+    cell = next(c for c in matrix
+                if c.direction == DIRECTION_DOWN and c.role == ROLE_PAYMENT_RECEIPT)
+    assert cell.count == 1
+    assert cell.amount == 500000.0
 
 
 # ---------------- run() 汇总 ----------------
