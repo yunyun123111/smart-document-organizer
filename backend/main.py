@@ -58,7 +58,20 @@ async def lifespan(app: FastAPI):
         sync_watch()
     except Exception:
         logger.exception("目录监控启动失败，本轮不启用")
+    # 对账定时巡检（后台线程，默认关闭，开关在 /reconciliation 页面）
+    try:
+        from backend.services.reconciliation_scheduler import sync_thread as sync_recon
+
+        sync_recon()
+    except Exception:
+        logger.exception("对账定时巡检启动失败，本轮不启用")
     yield
+    try:
+        from backend.services.reconciliation_scheduler import stop as stop_recon
+
+        stop_recon()
+    except Exception:
+        logger.exception("对账定时巡检停止失败")
     logger.info("=== %s 退出 ===", settings.APP_NAME)
 
 

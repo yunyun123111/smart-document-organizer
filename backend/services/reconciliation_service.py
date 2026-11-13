@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -200,8 +201,16 @@ class DiffItem:
     document_ids: list[int] = field(default_factory=list)
     candidate_document_ids: list[int] = field(default_factory=list)
     ignored: bool = False
+    # ---- 差异闭环（P0-2）----
+    # key：同一差异在多次对账之间保持稳定，用于判断"新增 / 遗留 / 已解决"，
+    #      以及给处理记录（resolution）找回家。
+    key: str = ""
+    # None 首次对账（没有可比的上次）；True 本轮新出现；False 上轮已存在。
+    is_new: Optional[bool] = None
+    # {"type": ignore/false_positive/supplement/adjust/pending, "note", "at"}
+    resolution: dict = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict:  # noqa: D401
         return {
             "type": self.type,
             "severity": self.severity,
@@ -215,12 +224,52 @@ class DiffItem:
             "document_ids": list(self.document_ids),
             "candidate_document_ids": list(self.candidate_document_ids),
             "ignored": bool(self.ignored),
+            "key": self.key,
+            "is_new": self.is_new,
+            "resolution": dict(self.resolution or {}),
         }
 
 
 # ==================== 通用工具 ====================
 
 _ZERO = Decimal("0")
+
+# 处理方式（差异闭环）：前两种视为"不再计数"，后三种仍算未处理完，只是标了进度。
+RESOLUTION_IGNORE = "ignore"
+RESOLUTION_FALSE_POSITIVE = "false_positive"
+RESOLUTION_SUPPLEMENT = "supplement"
+RESOLUTION_ADJUST = "adjust"
+RESOLUTION_PENDING = "pending"
+RESOLUTION_REOPEN = "reopen"   # 撤销已有处理，重新回到待办
+ALL_RESOLUTIONS: tuple[str, ...] = (
+    RESOLUTION_IGNORE,
+    RESOLUTION_FALSE_POSITIVE,
+    RESOLUTION_SUPPLEMENT,
+    RESOLUTION_ADJUST,
+    RESOLUTION_PENDING,
+    RESOLUTION_REOPEN,
+)
+# 标记后是否把这条差异从差异计数里移除
+RESOLUTION_CLOSES: frozenset[str] = frozenset({RESOLUTION_IGNORE, RESOLUTION_FALSE_POSITIVE})
+
+
+def diff_key(diff: dict) -> str:
+    """差异的稳定标识：类型 + 方向 + 环节 + 应有值 + 实际值 + 关联单据。
+
+    同一处差异在两次对账之间只要这六项不变，key 就不变，从而能判断
+    "这轮新出现的 / 上轮就有还没解决的 / 上轮有这轮消失（已解决）"。
+    卡片金额变化时 key 会变——这是有意的：数字变了就是另一处差异。
+    """
+    parts = [
+        str(diff.get("type", "")),
+        str(diff.get("direction", "")),
+        str(diff.get("role", "")),
+        str(diff.get("expected", "")),
+        str(diff.get("actual", "")),
+        ",".join(str(i) for i in sorted(diff.get("document_ids") or [])),
+    ]
+    raw = "|".join(parts)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def norm_text(value) -> str:
@@ -1627,8 +1676,21 @@ class ReconciliationService:
             if not businesses:
                 raise ReconciliationError(f"台账中不存在业务线：{business_no}")
 
+        # 上一轮快照：判断差异「新增 / 遗留 / 已解决」要用它，必须在 _upsert 覆盖之前读。
+        prev_snapshots: dict[str, dict] = {}
+        for row in self.db.execute(select(ReconciliationReport)).scalars().all():
+            try:
+                prev_snapshots[row.business_no] = json.loads(row.report_json or "{}")
+            except (TypeError, ValueError):
+                prev_snapshots[row.business_no] = {}
+
         docs = _load_documents(self.db)
         bound, dup_ids, pool, statements = self._bind_documents(businesses, docs)
+
+        # 外部明细（P1）：只做参考口径展示，不参与判定
+        from backend.services.external_detail_service import aggregate_by_business as _agg_external
+
+        external_by_business = _agg_external(self.db)
 
         ok = warning = error = no_data = 0
         unlinked_total = 0
@@ -1654,6 +1716,8 @@ class ReconciliationService:
             # 这条业务线一份单据都没关联上：2×5 全空不是"缺件"，是"还没上传资料"。
             # 此时不再把 10 格缺失报成 CRITICAL，避免几十条没资料的业务线全红。
             has_docs = any(m.count > 0 for m in matrix)
+            ext = external_by_business.get(biz.business_no, {})
+            resolved = self._merge_resolution(diffs, prev_snapshots.get(biz.business_no) or {}, has_docs)
             active = [d for d in diffs if not d.ignored]
             severities = [d.severity for d in active]
             if not has_docs:
@@ -1663,6 +1727,7 @@ class ReconciliationService:
                 # 一回事，留着只会把真差异埋掉；结论由 note 说明，矩阵仍给出。
                 diffs = []
                 active = []
+                resolved = []
             elif SEVERITY_CRITICAL in severities:
                 status = RECON_STATUS_ERROR
                 error += 1
@@ -1694,8 +1759,14 @@ class ReconciliationService:
                 "interest_received": fmt_amount(biz.interest_received),
                 "pay_amount": fmt_amount(biz.pay_amount),
                 "receipt_amount": fmt_amount(biz.receipt_amount),
+                # 客户/期间视角（P1）：聚合与导出都要，不靠报告表列
+                "period": self._period_of(biz),
+                "external_receipt_total": ext.get("receipt_total", "0.00"),
+                "external_payment_total": ext.get("payment_total", "0.00"),
+                "external_detail_count": ext.get("count", 0),
                 "matrix": [m.__dict__ for m in matrix],
                 "diffs": [d.to_dict() for d in diffs],
+                "resolved_diffs": resolved,
                 "unlinked_document_ids": unlinked,
             }
 
@@ -1729,6 +1800,71 @@ class ReconciliationService:
             "ledger_sheets": sheets,
             "duration_ms": duration,
         }
+
+    @staticmethod
+    def _period_of(biz) -> str:
+        """业务期间（YYYY-MM）：优先下游合同日期，其次上游；都没有留空。"""
+        for value in (biz.down_contract_date, biz.up_contract_date):
+            if not value:
+                continue
+            if isinstance(value, (date, datetime)):
+                return value.strftime("%Y-%m")
+            text = str(value).strip()
+            match = re.match(r"(\d{4})[-/年.]?(\d{1,2})", text)
+            if match:
+                return f"{match.group(1)}-{int(match.group(2)):02d}"
+        return ""
+
+    @staticmethod
+    def _merge_resolution(diffs: list[DiffItem], prev: dict, has_docs: bool) -> list[dict]:
+        """给本轮差异打 key / is_new，继承上一轮处理记录，返回「上轮有、本轮消失」的清单。
+
+        - is_new=True：上轮没有、本轮新出现的差异（重点看）
+        - is_new=False：上轮就存在、本轮仍在（遗留）
+        - is_new=None：首次对账，没有可比基准
+        - 已解决：上轮的 key 本轮不存在。注意「本轮没单据」不算已解决，
+          那是资料被移走或还没开始，不能记成"问题解决了"。
+        """
+        prev_diffs = prev.get("diffs") or []
+        prev_by_key: dict[str, dict] = {}
+        for pd in prev_diffs:
+            prev_by_key[pd.get("key") or diff_key(pd)] = pd
+
+        if not has_docs:
+            for d in diffs:
+                d.key = diff_key(d.to_dict())
+            return []
+
+        new_keys: set[str] = set()
+        for d in diffs:
+            key = diff_key(d.to_dict())
+            d.key = key
+            new_keys.add(key)
+            old = prev_by_key.get(key)
+            if old is None:
+                d.is_new = None if not prev_diffs else True
+            else:
+                d.is_new = False
+                resolution = old.get("resolution") or {}
+                if resolution and not d.resolution:
+                    d.resolution = dict(resolution)
+                    d.ignored = resolution.get("type") in RESOLUTION_CLOSES
+
+        resolved: list[dict] = []
+        for key, old in prev_by_key.items():
+            if key in new_keys:
+                continue
+            resolved.append({
+                "key": key,
+                "type": old.get("type", ""),
+                "direction": old.get("direction", ""),
+                "role": old.get("role", ""),
+                "title": old.get("title", ""),
+                "expected": old.get("expected", ""),
+                "actual": old.get("actual", ""),
+                "resolved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        return resolved
 
     def _upsert(self, *, business_no: str, ledger_sheet: str, up_contract_no: str,
                 down_contract_no: str, up_settlement: Decimal, down_settlement: Decimal,

@@ -269,7 +269,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 # 无迁移记录的老库按此版本视为"历史结构已齐"（v2~v4 的建索引语句依赖旧表列，
 # 不在最老的库上重跑），只补 v5 及之后新增的迁移
 _LEGACY_BASE_VERSION = 4
@@ -439,12 +439,39 @@ def _migrate_create_reconciliation(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_external_details(db: Session) -> None:
+    """V7-01: 新增 external_details 表（外部明细表导入，参考口径，不参与判定）。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS external_details ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "batch_no VARCHAR(64) NOT NULL DEFAULT '', "
+        "business_no VARCHAR(255) NOT NULL DEFAULT '', "
+        "occurred_on DATE, "
+        "amount NUMERIC(18,2) NOT NULL DEFAULT 0, "
+        "kind VARCHAR(16) NOT NULL DEFAULT 'receipt', "
+        "note VARCHAR(500) NOT NULL DEFAULT '', "
+        "source_filename VARCHAR(255) NOT NULL DEFAULT '', "
+        "imported_at DATETIME NOT NULL, "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_external_details_batch ON external_details (batch_no)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_external_details_business ON external_details (business_no)"
+    ))
+    _record_migration(db, 7, "create external details")
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
     (3, "create excel_sources", _migrate_create_excel_sources),
     (4, "create business_archive", _migrate_create_business_archive),
     (5, "create fingerprints and anomalies", _migrate_create_fingerprints_and_anomalies),
     (6, "create reconciliation reports", _migrate_create_reconciliation),
+    (7, "create external details", _migrate_create_external_details),
 ]
 
 

@@ -111,6 +111,12 @@ from backend.models.reconciliation_report import (
     RECON_TOLERANCE,
     ReconciliationReport,
 )
+from backend.models.external_detail import (
+    ALL_KINDS,
+    KIND_PAYMENT,
+    KIND_RECEIPT,
+    ExternalDetail,
+)
 
 __all__ = [
     "Base",
@@ -217,4 +223,8 @@ __all__ = [
     "DIFF_LEDGER_MISSING",
     "DIFF_UNPARSED_AMOUNT",
     "DIFF_UNCLASSIFIED_DOC",
+    "ExternalDetail",
+    "ALL_KINDS",
+    "KIND_RECEIPT",
+    "KIND_PAYMENT",
 ]
