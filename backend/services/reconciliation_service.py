@@ -69,6 +69,11 @@ CONTRACT_SHEETS = (MAIN_CONTRACT_SHEET,)
 SETTLEMENT_SHEET = "结算数据"
 PAYMENT_SHEET = "宏达收付款台账新"
 
+# ---- 单据方向 ----
+DIRECTION_UP = "up"
+DIRECTION_DOWN = "down"
+DIRECTION_UNKNOWN = "unknown"
+
 # ---- 单据角色（对账用，按 5 类 × 2 方向）----
 ROLE_CONTRACT = "contract"
 ROLE_SETTLEMENT = "settlement"
@@ -95,16 +100,12 @@ ROLE_LABELS = {
 # 合同与货权单仍进 2×5 矩阵展示资料齐套情况，但不产生差异；
 # 下游回款不在此处核对（回款明细由人工表单独提供）。
 _CHECKED_CELLS: frozenset[tuple[str, str]] = frozenset({
-    ("up", ROLE_SETTLEMENT),
-    ("up", ROLE_INVOICE),
-    ("up", ROLE_PAYMENT_RECEIPT),
-    ("down", ROLE_SETTLEMENT),
-    ("down", ROLE_INVOICE),
+    (DIRECTION_UP, ROLE_SETTLEMENT),
+    (DIRECTION_UP, ROLE_INVOICE),
+    (DIRECTION_UP, ROLE_PAYMENT_RECEIPT),
+    (DIRECTION_DOWN, ROLE_SETTLEMENT),
+    (DIRECTION_DOWN, ROLE_INVOICE),
 })
-
-DIRECTION_UP = "up"
-DIRECTION_DOWN = "down"
-DIRECTION_UNKNOWN = "unknown"
 
 # 合同号前缀 → 方向（两套编号体系都覆盖）
 UP_PREFIXES = ("HSYCCG", "SJWLCG", "BOTC", "CG")
@@ -1026,24 +1027,54 @@ def _sum_goods(docs: list[DocRecord]) -> Optional[Decimal]:
 
 
 def _diff_amount(title: str, expected: Optional[Decimal], actual: Optional[Decimal],
-                 direction: str, role: str, docs: list[int], hint: str = "") -> Optional[DiffItem]:
+                 direction: str, role: str, docs: list[int], hint: str = "",
+                 under_severity: str = SEVERITY_CRITICAL,
+                 under_hint: str = "") -> Optional[DiffItem]:
+    """金额不符。
+
+    默认两侧都按 CRITICAL 判；`under_severity` 允许把「实际金额低于应有金额」
+    降档——单据侧低于台账/结算，常见原因是分批结算、部分开票、漏传一份，
+    属「待补齐」而不是「账实冲突」，由调用方显式声明。
+    """
     if expected is None or actual is None:
         return None
     delta = actual - expected
     if abs(delta) <= RECON_TOLERANCE:
         return None
+    severity = under_severity if delta < 0 else SEVERITY_CRITICAL
+    message = hint or f"差额 {fmt_amount(delta)} 元"
+    if delta < 0 and under_hint:
+        message = f"{message}；{under_hint}"
     return DiffItem(
         type=DIFF_AMOUNT_MISMATCH,
-        severity=SEVERITY_CRITICAL,
+        severity=severity,
         title=title,
         direction=direction,
         role=role,
         expected=fmt_amount(expected),
         actual=fmt_amount(actual),
         delta=fmt_amount(delta),
-        message=hint or f"差额 {fmt_amount(delta)} 元",
+        message=message,
         document_ids=docs,
     )
+
+
+def _missing_severity(biz: LedgerBusiness, direction: str, role: str) -> str:
+    """缺件严重度。
+
+    - 付款回单是凭证，缺凭证不等于账实不符 → WARNING
+    - 结算/发票：台账该方向已有金额（业务已结算/已开票）而单据缺失 → CRITICAL；
+      台账金额为空或为 0（业务可能尚未启动）→ WARNING，避免把未开工的业务线判成错误
+    """
+    if role == ROLE_PAYMENT_RECEIPT:
+        return SEVERITY_WARNING
+    if role in (ROLE_SETTLEMENT, ROLE_INVOICE):
+        anchors = ((biz.up_settlement, biz.pay_amount) if direction == DIRECTION_UP
+                   else (biz.down_settlement, biz.receipt_amount))
+        if any(a is not None and abs(a) > RECON_TOLERANCE for a in anchors):
+            return SEVERITY_CRITICAL
+        return SEVERITY_WARNING
+    return SEVERITY_CRITICAL
 
 
 def check_business(biz: LedgerBusiness, docs: list[DocRecord],
@@ -1067,10 +1098,9 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
         by_cell.setdefault((d.direction, d.role), []).append(d)
 
     # 同一张单据被重复上传（同一份结算单存了两个副本、同一张图改了文件名）时，
-    # 金额会被算两遍：下游结算 7,922,962.05 × 2 = 1,584.59 万，直接变成
-    # 「与台账 792 万不符」。两道判据：①图像指纹（同一张图，抽取字段抽错也认）；
-    # ②业务键「同合同号 + 同金额 + 同日期」。命中任一即视为同一张单据，
-    # 金额只计一份；张数照实显示，并把重复项单独提示。
+    # 金额会被算两遍，直接变成「与台账不符」。两道判据：①图像指纹（同一张图，
+    # 抽取字段抽错也认）；②业务键「同合同号 + 同金额 + 同日期」。命中任一即视为
+    # 同一张单据，金额只计一份；张数照实显示，并把重复项单独提示。
     by_cell_amt: dict[tuple[str, str], list[DocRecord]] = {}
     dup_groups: list[tuple[DocRecord, DocRecord, str]] = []
     for key, cell_docs in by_cell.items():
@@ -1199,7 +1229,8 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
                 # 库里有同角色的单据但方向判不出来（货权单只有船名/吨位、
                 # 转出方与接收方都不是本业务线主体时无法二分上下游），
                 # 这不是"缺件"，是"方向待确认"，不该按 CRITICAL 报。
-                severity=SEVERITY_WARNING if candidates else SEVERITY_CRITICAL,
+                severity=(SEVERITY_WARNING if candidates
+                          else _missing_severity(biz, direction, role)),
                 title=f"缺{_dir_label(direction)}{ROLE_LABELS[role]}",
                 direction=direction, role=role,
                 expected="应有 1 份及以上",
@@ -1229,7 +1260,9 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
     up_inv_docs = [d.document_id for d in by_cell.get((DIRECTION_UP, ROLE_INVOICE), [])]
     if up_settle is not None and up_invoice is not None:
         item = _diff_amount("上游发票金额与采购结算金额不符", up_settle, up_invoice,
-                            DIRECTION_UP, ROLE_INVOICE, up_inv_docs)
+                            DIRECTION_UP, ROLE_INVOICE, up_inv_docs,
+                            under_severity=SEVERITY_WARNING,
+                            under_hint="发票合计低于结算金额，可能尚未开完全部发票")
         if item:
             diffs.append(item)
     if up_settle is not None and up_pay is not None:
@@ -1250,8 +1283,8 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
     up_pay_doc_sum = _sum_goods(by_cell_amt.get((DIRECTION_UP, ROLE_PAYMENT_RECEIPT), []))
     if up_pay is not None:
         # 一份货款付款回单都没有时 _sum_goods 返回 None，按 0 参与比较：
-        # 上游 795 万付款凭证确实缺失（当前只有退款回单），按 INFO 标注待补，
-        # 不把资料缺口升级成状态告警（你说的"付款先这样，后面用会计账单"）。
+        # 台账已登记付款但凭证缺失属资料缺口，按 INFO 标注待补，
+        # 不把缺凭证升级成状态告警。
         covered = up_pay_doc_sum if up_pay_doc_sum is not None else _ZERO
         delta = covered - up_pay
         if abs(delta) > RECON_TOLERANCE:
@@ -1289,7 +1322,9 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
     down_inv_docs = [d.document_id for d in by_cell.get((DIRECTION_DOWN, ROLE_INVOICE), [])]
     if down_settle is not None and down_invoice is not None:
         item = _diff_amount("下游发票金额与销售结算金额不符", down_settle, down_invoice,
-                            DIRECTION_DOWN, ROLE_INVOICE, down_inv_docs)
+                            DIRECTION_DOWN, ROLE_INVOICE, down_inv_docs,
+                            under_severity=SEVERITY_WARNING,
+                            under_hint="发票合计低于结算金额，可能尚未开完全部发票")
         if item:
             diffs.append(item)
     # 下游回款（收付款回单）不在核对范围：回款明细由人工表单独提供。
@@ -1331,6 +1366,21 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
                 message=f"下游结算 {fmt_amount(down_settle)} − 上游结算 {fmt_amount(up_settle)} = "
                         f"{fmt_amount(gap)}，台账应收 {fmt_amount(r_int)} / 实收 {fmt_amount(s_int)}",
             ))
+        elif abs(gap) > RECON_TOLERANCE:
+            # 台账两侧利息都没登记时，差额没有任何参照，不能默认"无差异"吞掉：
+            # 差额可能是利息、也可能是结算口径不一致，提示人工确认。
+            diffs.append(DiffItem(
+                type=DIFF_INTEREST_MISMATCH,
+                severity=SEVERITY_WARNING,
+                title="上下游结算存在差额，台账未登记利息",
+                direction="cross", role="interest",
+                expected=fmt_amount(up_settle),
+                actual=fmt_amount(down_settle),
+                delta=fmt_amount(gap),
+                message=f"下游结算 {fmt_amount(down_settle)} − 上游结算 {fmt_amount(up_settle)} = "
+                        f"{fmt_amount(gap)}，台账应收利息与实收利息均未登记，"
+                        "请确认该差额是否应作为利息补登记",
+            ))
 
     # ---- R5 合同归属 ---- 
     for d in docs:
@@ -1339,9 +1389,9 @@ def check_business(biz: LedgerBusiness, docs: list[DocRecord],
         variants = contract_variants(d.contract_no)
         if variants & contract_nos:
             continue
-        # 合同正文里自写的编号（如 HSYC-TZS-20260512，TZS = 船名简称）与台账
-        # 登记的两套编号（HSYCXS（DD）-… / SOTC…）本就不是一个体系，若单据
-        # 金额又能与台账某一锚点完全对上，说明就是本业务线的单据，只作提示。
+        # 合同正文里自写的编号（常见形如「HSYC-<船名简称>-日期」）与台账登记的
+        # 两套编号体系（采购/销售 OA 号 + 平台号）本就不是一个体系。若单据金额
+        # 又能与台账某一锚点完全对上，说明就是本业务线的单据，只作提示。
         anchored = any(
             abs((d.amount or _ZERO) - a[0]) <= RECON_TOLERANCE
             for a in _amount_anchors(biz)

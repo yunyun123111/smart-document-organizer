@@ -391,7 +391,10 @@ def test_invoice_amount_mismatch_detected(loaded):
         amount=Decimal("999000"), direction=DIRECTION_DOWN, role=ROLE_INVOICE,
     )]
     diffs, matrix, _ = _diffs_for(biz, docs)
-    items = [d for d in diffs if d.type == DIFF_AMOUNT_MISMATCH and d.severity == "CRITICAL"]
+    # 发票合计低于结算金额（可能尚未开完全部发票）按提示处理，不再判 CRITICAL
+    items = [d for d in diffs
+             if d.type == DIFF_AMOUNT_MISMATCH and d.severity == "WARNING"
+             and d.role == ROLE_INVOICE and d.direction == DIRECTION_DOWN]
     assert len(items) == 1
     # 发票格已被填充
     invoice_cell = next(c for c in matrix if c.role == ROLE_INVOICE and c.direction == DIRECTION_DOWN)
