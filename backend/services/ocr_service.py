@@ -8,7 +8,12 @@
 """
 from __future__ import annotations
 
+import base64
 import io
+import json
+import re
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,6 +160,135 @@ class PaddleOCRProvider(OCRProvider):
         return OCRResult(text=full_text, confidence=conf, items=items, provider=self.name)
 
 
+# ---- Xiaomi-OCR-0：0.8B 文档理解模型，走 OpenAI 兼容端点 ----
+
+_OTSL_TAG_RE = re.compile(r"<[a-z]{1,6}cel>|<nl>|<[a-z]{1,6}row>")
+
+
+def strip_otsl(text: str) -> str:
+    """把 OTSL 表格标记还原成按行的纯文本。
+
+    Xiaomi-OCR-0 按官方约定输出 ``<fcel>单元<lcel>...<nl>`` 形式的 OTSL（不是 Markdown）。
+    这里不复刻官方 MCP 的 HTML 转换，只还原"同一行用 | 分隔、行之间换行"的文本，
+    足够 field_extractor 与对账规则提取金额、票号、日期、公司名。
+
+    标记语义：``<fcel>`` 起始单元格、``<ecel>`` 空单元格、``<lcel>``/``<ucel>`` 跨列延续、
+    ``<nl>`` 换行。跨列延续不加分隔符，否则横跨多列的标题会被拆成空列。
+    """
+    if not text:
+        return ""
+    cell_mark = "\x00"
+    rows: list[str] = []
+    for raw_line in text.split("<nl>"):
+        line = (
+            raw_line.replace("<fcel>", cell_mark)
+            .replace("<ecel>", cell_mark)
+            .replace("<lcel>", "")
+            .replace("<ucel>", "")
+        )
+        line = _OTSL_TAG_RE.sub("", line)
+        cells = [c.strip() for c in line.split(cell_mark)]
+        while cells and not cells[0]:
+            cells.pop(0)
+        while cells and not cells[-1]:
+            cells.pop()
+        if cells:
+            rows.append(" | ".join(cells))
+    return re.sub(r"[ \t]+", " ", "\n".join(rows)).strip()
+
+
+class XiaomiOCRProvider(OCRProvider):
+    """Xiaomi-OCR-0 提供方（OpenAI 兼容 /chat/completions + 图片 base64）。
+
+    后端可为 Ollama（默认 :11434/v1）或 vLLM/SGLang（:8000/v1），模型名由
+    settings.OCR_MODEL 指定。模型不返回逐块置信度，整页统一记 0.85 表示"可信"。
+    """
+
+    name = "xiaomi"
+    PROMPT = (
+        "识别图片中的全部文字，按阅读顺序输出，表格保留行列结构。"
+        "不要解释，只输出识别结果。"
+    )
+
+    def __init__(self, base_url: str | None = None, model: str | None = None,
+                 timeout: int | None = None):
+        self.base_url = (base_url or settings.OCR_BASE_URL).rstrip("/")
+        self.model = model or settings.OCR_MODEL
+        self.timeout = timeout or settings.OCR_TIMEOUT
+
+    def _encode_image(self, image: Image.Image) -> tuple[str, str]:
+        """压缩长边后转 base64 data URI：视觉 token 直接决定耗时，必须先压。"""
+        image = ImageOps.exif_transpose(image)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        edge = max(image.size)
+        limit = settings.OCR_MAX_IMAGE_EDGE
+        if limit and edge > limit:
+            ratio = limit / edge
+            image = image.resize(
+                (max(1, int(image.width * ratio)), max(1, int(image.height * ratio)))
+            )
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii"), "image/png"
+
+    def recognize(self, image: Image.Image) -> OCRResult:
+        b64, mime = self._encode_image(image)
+        payload = {
+            "model": self.model,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": self.PROMPT},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                ],
+            }],
+            "max_tokens": 2048,
+            "temperature": 0,
+            "stream": False,
+        }
+        req = urllib.request.Request(
+            f"{self.base_url}/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+            raise RuntimeError(f"Xiaomi-OCR 返回 HTTP {e.code}: {detail}") from e
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"Xiaomi-OCR 调用失败（{self.base_url}）: {e}") from e
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Xiaomi-OCR 响应结构异常: {str(body)[:200]}") from e
+
+        text = strip_otsl(content)
+        logger.info("Xiaomi-OCR 识别完成：%d 字符，模型 %s", len(text), self.model)
+        return OCRResult(text=text, confidence=0.85, items=[], provider=self.name)
+
+
+_PROVIDER_REGISTRY = {
+    "rapidocr": RapidOCRProvider,
+    "paddleocr": PaddleOCRProvider,
+    "xiaomi": XiaomiOCRProvider,
+}
+
+
+def build_provider(name: str | None = None) -> OCRProvider:
+    """按 settings.OCR_PROVIDER 构造识别引擎；未知取值记录告警并回落 RapidOCR。"""
+    key = (name or settings.OCR_PROVIDER or "rapidocr").strip().lower()
+    cls = _PROVIDER_REGISTRY.get(key)
+    if cls is None:
+        logger.warning("未知 OCR_PROVIDER=%s，回退 rapidocr", key)
+        return RapidOCRProvider()
+    return cls()
+
+
 class OCRService:
     """OCR 统一入口。业务代码只允许通过本类调用 OCR。"""
 
@@ -167,8 +301,8 @@ class OCRService:
         if not settings.OCR_ENABLED:
             return None
         if self._provider is None:
-            # 默认使用 RapidOCR；可通过 .env / 设置切换 provider
-            self._provider = RapidOCRProvider()
+            # 引擎由 settings.OCR_PROVIDER 决定：rapidocr / paddleocr / xiaomi
+            self._provider = build_provider()
         return self._provider
 
     def recognize_image(self, image: Image.Image) -> OCRResult:
@@ -187,6 +321,16 @@ class OCRService:
             )
             return result
         except Exception as e:  # noqa: BLE001
+            # 非默认引擎失败时回退 rapidocr，避免单个模型服务故障阻塞整个整理流程
+            if provider.name != "rapidocr" and settings.OCR_FALLBACK:
+                logger.warning("%s 识别失败，回退 rapidocr：%s", provider.name, e)
+                try:
+                    result = RapidOCRProvider().recognize(image)
+                    logger.info("回退 rapidocr 成功：%d 字符", len(result.text))
+                    return result
+                except Exception as inner:  # noqa: BLE001
+                    logger.error("回退 rapidocr 仍失败: %s", inner)
+                    raise e from inner
             logger.error("OCR 识别失败: %s", e)
             raise
 

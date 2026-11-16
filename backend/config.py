@@ -69,8 +69,16 @@ class Settings(BaseSettings):
     # 盖章检测（本地图像算法，零 AI token）
     SEAL_DETECT_ENABLED: bool = True
 
-    # OCR（P4 阶段接入 PaddleOCR）
+    # OCR
     OCR_ENABLED: bool = True
+    # 识别引擎：rapidocr（默认，快，全量用）| paddleocr | xiaomi（Xiaomi-OCR-0，慢但更准）
+    OCR_PROVIDER: str = "rapidocr"
+    # Xiaomi-OCR-0 的 OpenAI 兼容推理端点（Ollama: :11434/v1；vLLM/SGLang: :8000/v1）
+    OCR_BASE_URL: str = "http://127.0.0.1:11434/v1"
+    OCR_MODEL: str = "longwayxu/xiaomi-ocr-0:bf16"
+    OCR_TIMEOUT: int = 180  # 秒；CPU 上单页约 80s，留足余量
+    OCR_MAX_IMAGE_EDGE: int = 1280  # 送入模型前长边压缩，减少视觉 token
+    OCR_FALLBACK: bool = True  # xiaomi 调用失败时回退 rapidocr，避免阻塞整理
 
     # AI（OpenAI Compatible API）
     AI_ENABLED: bool = True
