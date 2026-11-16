@@ -305,6 +305,10 @@ class OCRService:
             self._provider = build_provider()
         return self._provider
 
+    def reset(self) -> None:
+        """清掉缓存的引擎实例：设置页切换 provider / 端点后调用，下次识别重建。"""
+        self._provider = None
+
     def recognize_image(self, image: Image.Image) -> OCRResult:
         """对 PIL 图像进行 OCR。未启用 OCR 时返回空结果。"""
         provider = self.provider

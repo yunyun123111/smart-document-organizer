@@ -36,9 +36,32 @@ import {
   type ArchiveTemplateItem,
   getWatchStatus,
   type WatchStatus,
+  testOCRHealth,
+  type OCRHealth,
 } from '@/api'
 
 const form = ref<Settings | null>(null)
+const ocrTesting = ref(false)
+const ocrHealth = ref<OCRHealth | null>(null)
+
+async function testOcr() {
+  ocrTesting.value = true
+  try {
+    ocrHealth.value = await testOCRHealth()
+    if (ocrHealth.value.reachable && ocrHealth.value.model_available) {
+      ElMessage.success('OCR 端点可达，模型已就绪')
+    } else if (ocrHealth.value.reachable) {
+      ElMessage.warning('端点可达，但模型名不在服务列表中')
+    } else {
+      ElMessage.error(ocrHealth.value.error || 'OCR 端点不可达')
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || '连通性检测失败')
+  } finally {
+    ocrTesting.value = false
+  }
+}
+
 const templatePresets = ref<ArchiveTemplateItem[]>([])
 const customTemplate = ref('')
 const newTplValue = ref('')
@@ -299,6 +322,12 @@ async function save() {
       document_root: form.value.document_root,
       inbox_root: form.value.inbox_root,
       ocr_enabled: form.value.ocr_enabled,
+      ocr_provider: form.value.ocr_provider,
+      ocr_base_url: form.value.ocr_base_url,
+      ocr_model: form.value.ocr_model,
+      ocr_timeout: form.value.ocr_timeout,
+      ocr_kie_enabled: form.value.ocr_kie_enabled,
+      ocr_fallback: form.value.ocr_fallback,
       ai_enabled: form.value.ai_enabled,
       ai_provider: form.value.ai_provider,
       ai_base_url: form.value.ai_base_url,
@@ -834,8 +863,52 @@ onMounted(() => { load(); loadExcelSources() })
       <el-form label-width="120px">
         <el-form-item label="OCR 识别">
           <el-switch v-model="form.ocr_enabled" active-text="启用" />
-          <div class="gray small">扫描件 / 图片文字识别（RapidOCR 本地模型）</div>
+          <div class="gray small">扫描件 / 图片文字识别</div>
         </el-form-item>
+        <el-form-item label="OCR 引擎">
+          <el-select v-model="form.ocr_provider" style="width: 260px">
+            <el-option label="RapidOCR（本地，快，默认）" value="rapidocr" />
+            <el-option label="PaddleOCR（本地，重）" value="paddleocr" />
+            <el-option label="Xiaomi-OCR-0（本地，准但慢）" value="xiaomi" />
+          </el-select>
+          <el-button size="small" style="margin-left: 8px" :loading="ocrTesting" @click="testOcr">
+            连通性检测
+          </el-button>
+          <div v-if="ocrHealth" class="gray small">
+            <template v-if="ocrHealth.reachable && ocrHealth.model_available">
+              ✓ 端点可达，模型「{{ ocrHealth.model }}」已就绪
+            </template>
+            <template v-else-if="ocrHealth.reachable">
+              ⚠ 端点可达，但模型名不在列表中：{{ ocrHealth.models.join('、') || '（空）' }}
+            </template>
+            <template v-else>
+              ✗ 不可达：{{ ocrHealth.error || '未知错误' }}
+            </template>
+          </div>
+        </el-form-item>
+        <template v-if="form.ocr_provider === 'xiaomi'">
+          <el-form-item label="推理端点">
+            <el-input v-model="form.ocr_base_url" placeholder="http://127.0.0.1:11434/v1" />
+          </el-form-item>
+          <el-form-item label="模型名">
+            <el-input v-model="form.ocr_model" placeholder="如 longwayxu/xiaomi-ocr-0:bf16" />
+          </el-form-item>
+          <el-form-item label="超时（秒）">
+            <el-input-number v-model="form.ocr_timeout" :min="30" :max="600" :step="30" />
+            <span class="gray small"> CPU 单页约 50 秒，建议 180</span>
+          </el-form-item>
+          <el-form-item label="视觉 KIE 兜底">
+            <el-switch v-model="form.ocr_kie_enabled" />
+            <div class="gray small">
+              扫描件缺关键字段（金额/合同号/发票号）或字段置信度偏低时，让模型直读原图补字段。
+              单页约 50 秒，只在触发条件下执行。
+            </div>
+          </el-form-item>
+          <el-form-item label="失败回退">
+            <el-switch v-model="form.ocr_fallback" />
+            <div class="gray small">模型服务不可用时自动回退 RapidOCR，避免整理卡住</div>
+          </el-form-item>
+        </template>
         <el-form-item label="AI 辅助">
           <el-switch v-model="form.ai_enabled" />
           <el-tag v-if="form.ai_api_key_set" type="success" size="small">已配置</el-tag>

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     OCR_TIMEOUT: int = 180  # 秒；CPU 上单页约 80s，留足余量
     OCR_MAX_IMAGE_EDGE: int = 1280  # 送入模型前长边压缩，减少视觉 token
     OCR_FALLBACK: bool = True  # xiaomi 调用失败时回退 rapidocr，避免阻塞整理
+    # 视觉 KIE 兜底：扫描件/图片缺关键字段时，让 Xiaomi-OCR-0 直读原图输出 JSON 字段
+    OCR_KIE_ENABLED: bool = True
+    OCR_KIE_CONF: float = 0.9  # KIE 字段置信度（视觉直读，高于正则的 0.6~0.85）
 
     # AI（OpenAI Compatible API）
     AI_ENABLED: bool = True

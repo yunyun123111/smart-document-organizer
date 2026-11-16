@@ -127,6 +127,22 @@ class ClassifierService:
                 parsed.text = cleaned.text
 
             text = parsed.text or ""
+            pre_kie: dict[str, str] = {}
+            if not text and settings.OCR_KIE_ENABLED and parsed.needs_ocr:
+                # RapidOCR 一个字都没认出来：先用视觉 KIE 抢救，把字段拼成文本让规则继续工作
+                try:
+                    from backend.services.ocr_kie_service import CORE_FIELDS, ocr_kie_service
+
+                    kie = ocr_kie_service.extract_from_file(path)
+                    if kie.ok:
+                        pre_kie = dict(kie.fields)
+                        text = "\n".join(f"{k} | {v}" for k, v in pre_kie.items())
+                        logger.info(
+                            "RapidOCR 无文本，KIE 抢救出 %d 个字段: %s",
+                            len(pre_kie), sorted(pre_kie),
+                        )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("KIE 抢救异常（已跳过，不影响识别）: %s", e)
             result.text = text
             if not text:
                 result.error = "未提取到任何文本内容"
@@ -152,6 +168,12 @@ class ClassifierService:
                 if fields_dict
                 else 0.0
             )
+
+            # KIE 抢救出来的字段并入结果（只取核心字段，数量/摘要类实测易错位）
+            if pre_kie:
+                self._merge_kie_fields(result, pre_kie, list(CORE_FIELDS))
+                if result.fields:
+                    field_conf = sum(v[1] for v in result.fields.values()) / len(result.fields)
 
             # 4.3 Excel 登记表权威数据源匹配（纯本地零 token）：
             # OCR 提取合同号（或日期+船名 / 物料+数量）命中 Excel 台账行，
@@ -188,6 +210,30 @@ class ClassifierService:
                     "Excel 登记表命中 %s/%s（%s），已用台账字段覆盖 OCR",
                     em.source_name, em.sheet_name, em.key,
                 )
+
+            # 4.4 视觉 KIE 兜底（本地 Xiaomi-OCR-0）：扫描件/图片缺关键字段，或字段
+            # 平均置信度偏低时，让视觉模型直读原图补字段。CPU 单页约 50s，只在触发
+            # 条件下执行；失败静默跳过，绝不中断整理主流程。
+            if settings.OCR_KIE_ENABLED and parsed.needs_ocr and not pre_kie:
+                trigger = self._kie_trigger_fields(best, result.field_values, field_conf)
+                if trigger:
+                    try:
+                        from backend.services.ocr_kie_service import ocr_kie_service
+
+                        kie = ocr_kie_service.extract_from_file(path)
+                        if kie.ok:
+                            self._merge_kie_fields(result, kie.fields, trigger)
+                            logger.info(
+                                "KIE 兜底补字段 %s：%s（%.1fs）",
+                                path.name, sorted(kie.fields.keys()), kie.elapsed,
+                            )
+                            # 补字段后重算字段均分，供综合置信度使用
+                            if result.fields:
+                                field_conf = sum(
+                                    v[1] for v in result.fields.values()
+                                ) / len(result.fields)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("KIE 兜底异常（已跳过，不影响识别）: %s", e)
 
             # 4.6 格式样本匹配（人工样例学习，纯本地零 token）：
             # 用户上传的清晰样本指纹与文档版式一致 -> 直接自动归档，跳过 AI
@@ -319,6 +365,75 @@ class ClassifierService:
         # 图片
         res = ocr_service.recognize_image_file(path)
         return res.text
+
+    def _kie_trigger_fields(self, best: RuleMatch | None, values: dict, field_conf: float) -> list[str]:
+        """判断是否需要视觉 KIE 兜底，返回要抽取的字段清单（空列表=不触发）。
+
+        触发条件（满足其一）：
+        1. 该单据类型的必需字段缺失（优先用识别模板的 require_fields，没模板则看金额）；
+        2. 字段平均置信度低于审核阈值（说明整条正则链路不可靠）。
+        """
+        required = ["amount"]
+        doc_type = best.category_name if best else None
+        if doc_type:
+            tpl = (
+                self.db.query(RecognitionTemplate)
+                .filter(
+                    RecognitionTemplate.document_type == doc_type,
+                    RecognitionTemplate.enabled.is_(True),
+                )
+                .first()
+            )
+            if tpl and tpl.require_fields_list:
+                required = list(tpl.require_fields_list)
+        missing = [f for f in required if not str(values.get(f) or "").strip()]
+        low_conf = field_conf < settings.REVIEW_THRESHOLD
+        if not missing and not low_conf:
+            return []
+        wanted: set[str] = set(missing)
+        if low_conf:
+            wanted |= {"amount", "contract_no", "invoice_no", "date", "company"}
+        return sorted(wanted)
+
+    def _merge_kie_fields(self, result: AnalysisResult, fields: dict, wanted: list[str]) -> None:
+        """把 KIE 字段并入识别结果：缺失补上，高价值字段冲突时以视觉直读为准。"""
+        import re
+
+        overwrite = {"amount", "contract_no", "invoice_no"}
+
+        def _same(a: str, b: str) -> bool:
+            """忽略空格/大小写视为同值（模型常丢合同号里的空格）。"""
+            return re.sub(r"\s+", "", a).upper() == re.sub(r"\s+", "", b).upper()
+
+        conf = settings.OCR_KIE_CONF
+        for k, v in fields.items():
+            if not v or (wanted and k not in wanted):
+                continue
+            old = str(result.field_values.get(k) or "").strip()
+            if old and old != v:
+                if _same(old, v):
+                    continue
+                if k in overwrite:
+                    result.field_conflicts.append({
+                        "field": k,
+                        "values": [old, v],
+                        "chosen": v,
+                        "reason": "视觉 KIE 直读值覆盖正则结果",
+                    })
+                    result.field_values[k] = v
+                    result.fields[k] = (v, conf, "KIE")
+                else:
+                    result.field_conflicts.append({
+                        "field": k,
+                        "values": [old, v],
+                        "chosen": old,
+                        "reason": "保留既有值，KIE 仅记录冲突",
+                    })
+                continue
+            if old:
+                continue
+            result.field_values[k] = v
+            result.fields[k] = (v, conf, "KIE")
 
     def _match_template(self, doc_type: str | None, fields: dict) -> "RecognitionTemplate | None":
         """识别模板匹配：同类型且关键字段齐全即命中。"""

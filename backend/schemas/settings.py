@@ -11,6 +11,12 @@ class SettingsOut(BaseModel):
     document_root: str
     inbox_root: str
     ocr_enabled: bool
+    ocr_provider: str
+    ocr_base_url: str
+    ocr_model: str
+    ocr_timeout: int
+    ocr_kie_enabled: bool
+    ocr_fallback: bool
     ai_enabled: bool
     ai_provider: str
     ai_base_url: str
@@ -51,6 +57,12 @@ class SettingsUpdate(BaseModel):
     document_root: Optional[str] = None
     inbox_root: Optional[str] = None
     ocr_enabled: Optional[bool] = None
+    ocr_provider: Optional[str] = None
+    ocr_base_url: Optional[str] = None
+    ocr_model: Optional[str] = None
+    ocr_timeout: Optional[int] = None
+    ocr_kie_enabled: Optional[bool] = None
+    ocr_fallback: Optional[bool] = None
     ai_enabled: Optional[bool] = None
     ai_provider: Optional[str] = None
     ai_base_url: Optional[str] = None

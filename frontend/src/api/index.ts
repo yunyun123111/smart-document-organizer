@@ -544,6 +544,12 @@ export interface Settings {
   document_root: string
   inbox_root: string
   ocr_enabled: boolean
+  ocr_provider: string
+  ocr_base_url: string
+  ocr_model: string
+  ocr_timeout: number
+  ocr_kie_enabled: boolean
+  ocr_fallback: boolean
   ai_enabled: boolean
   ai_provider: string
   ai_base_url: string
@@ -585,6 +591,20 @@ export function getSettings(): Promise<Settings> {
 
 export function updateSettings(data: Partial<Settings>): Promise<Settings> {
   return http.put('/settings', data)
+}
+
+export interface OCRHealth {
+  provider: string
+  base_url: string
+  model: string
+  reachable: boolean
+  model_available: boolean
+  models: string[]
+  error: string
+}
+
+export function testOCRHealth(): Promise<OCRHealth> {
+  return http.get('/settings/ocr/health')
 }
 
 // ---------- 目录自动监控状态 ----------

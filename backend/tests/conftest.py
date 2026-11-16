@@ -17,6 +17,9 @@ os.environ["LOG_LEVEL"] = "ERROR"
 #    （测试结果不稳定、慢，且把文档内容发给外部服务）；
 # 2) 本机 ALLOW_OVERWRITE=True 会让"重名禁止覆盖"的安全断言在错误配置下运行。
 os.environ["AI_ENABLED"] = "False"
+# 视觉 KIE 兜底默认关闭：测试不应向本机 Ollama 发真实请求（单页约 50s）
+os.environ["OCR_KIE_ENABLED"] = "False"
+os.environ["OCR_PROVIDER"] = "rapidocr"
 os.environ["AI_BASE_URL"] = ""
 os.environ["AI_API_KEY"] = ""
 os.environ["ALLOW_OVERWRITE"] = "False"
