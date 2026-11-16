@@ -26,6 +26,7 @@ Thumbs.db
 
 # ===== 临时文件 =====
 *.tmp
+.pytest_cache/
 
 # ===== 密钥与敏感配置 =====
 .env

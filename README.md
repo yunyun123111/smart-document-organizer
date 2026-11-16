@@ -31,30 +31,36 @@ smart-document-organizer/
 └── docs/               # 设计文档
 ```
 
-## 快速开始
+## 启动方式
 
-### 后端
+日常使用只有一个入口，其余命令仅供开发调试。
+
+| 场景 | 入口 | 说明 |
+|---|---|---|
+| 日常使用（推荐） | 双击 `启动系统.bat` | 启动后端 8000 + 打开桌面窗口；本机没装 pywebview 时自动改用浏览器打开；关闭窗口即停止本次启动的服务 |
+| 桌面快捷方式 | 执行一次 `安装桌面快捷方式.bat` | 在桌面创建「智能文档整理」快捷方式，之后双击图标即可 |
+| 停止服务 | `stop_server.bat` | 结束占用 8000 端口的进程 |
+| 前端开发 | `cd frontend` → `npm run dev` | 5173 端口，`/api` 自动代理到 8000 |
+| 后端调试 | `python -m uvicorn backend.main:app --reload --port 8000` | 热重载，改代码自动重启；不要与 `启动系统.bat` 同时运行 |
+
+## 安装（首次 / 换机器）
 
 ```bash
-# 1. 创建虚拟环境并安装依赖
+# 后端依赖
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 
-# 2. 配置环境变量（可选，默认即可运行）
+# 配置环境变量（可选，不配置时降级为纯规则 + OCR）
 copy .env.example .env          # Windows
 
-# 3. 启动后端（首次启动自动建表 + 写入默认分类）
-python -m uvicorn backend.main:app --reload --port 8000
-```
-
-### 前端
-
-```bash
+# 前端依赖（需要前端开发或重新构建前端时）
 cd frontend
 npm install
-npm run dev                     # http://localhost:5173 （/api 自动代理到后端 8000）
+npm run build
 ```
+
+首次启动自动建表并写入默认分类，无需手动初始化数据库。
 
 ## 环境变量与安全
 
@@ -67,7 +73,7 @@ npm run dev                     # http://localhost:5173 （/api 自动代理到�
 ## 测试
 
 ```bash
-python -m pytest backend/tests -v
+python -m pytest tests backend\tests -q
 ```
 
 ## 开发进度
@@ -78,8 +84,6 @@ python -m pytest backend/tests -v
 - **里程碑 2（Phase 4–10）**：OCR / 规则引擎 / 字段提取 / AI / 置信度 / 重命名 / 归档（含去重与撤销）✅
 - **里程碑 3（Phase 11–17）**：批量整理 / 人工审核 / 操作日志 / 文档库 / 分类与规则管理 / 系统设置 / 数据看板 / 完整测试 ✅
 
-**测试**：后端 126 项测试全部通过（解析 / OCR / 规则 / 字段 / AI / 置信度 / 重命名 / 归档 / 分类引擎 / API 集成）。
+**测试**：后端 538 项测试全部通过（解析 / OCR / 规则 / 字段 / AI / 置信度 / 重命名 / 归档 / 分类引擎 / 业务线对账 / API 集成）。
 
-**快速使用**：双击 `启动系统.bat` 一键启动（后端 8000），浏览器打开 <http://127.0.0.1:8000>；或先运行 `安装桌面快捷方式.bat` 在桌面创建「智能文档整理」快捷方式，停止服务用 `stop_server.bat`。
-
-详细规格见 `PROJECT_SPEC.md`。
+启动方式见上方「启动方式」，详细规格见 `PROJECT_SPEC.md`。
