@@ -37,6 +37,8 @@ from backend.schemas.document import DocumentDetail, DocumentListItem
 from backend.schemas.processing import UploadResponse
 from backend.services.document_search import (
     build_keyword_conditions,
+    fulltext_doc_ids,
+    fulltext_snippets,
     match_field_ids,
     suggest,
 )
@@ -112,7 +114,12 @@ def list_documents(
         )
         query = query.filter(Document.id.in_(sub))
     if keyword and keyword.strip():
-        conds = build_keyword_conditions(db, keyword.strip())
+        kw = keyword.strip()
+        conds = build_keyword_conditions(db, kw)
+        # 正文（OCR/解析文本）命中并入同一组 OR：搜内容也能出结果
+        ft_ids = fulltext_doc_ids(db, kw)
+        if ft_ids:
+            conds.append(Document.id.in_(ft_ids))
         query = query.filter(or_(*conds))
     # ---- 合同号模糊过滤 ----
     if contract_no:
@@ -168,6 +175,11 @@ def list_documents(
                 o.file_hash, o.original_filename or o.current_filename or f"文档#{o.id}"
             )
 
+    # 搜索命中片段：仅在关键词搜索时生成，供列表高亮
+    snippets: dict[int, str] = {}
+    if keyword and keyword.strip():
+        snippets = fulltext_snippets(db, keyword.strip(), [d.id for d in docs])
+
     return [
         DocumentListItem(
             id=d.id,
@@ -180,6 +192,7 @@ def list_documents(
             confidence=d.confidence,
             status=d.status,
             duplicate_of=dup_map.get(d.file_hash) if d.status == "duplicate" else None,
+            text_snippet=snippets.get(d.id),
             created_at=d.created_at,
             updated_at=d.updated_at,
         )

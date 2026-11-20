@@ -51,6 +51,7 @@ from backend.models.processing_job import (
     JOB_CANCELLED,
     JOB_COMPLETED,
     JOB_FAILED,
+    JOB_INTERRUPTED,
     JOB_RUNNING,
     ProcessingJob,
 )
@@ -191,6 +192,7 @@ __all__ = [
     "JOB_COMPLETED",
     "JOB_CANCELLED",
     "JOB_FAILED",
+    "JOB_INTERRUPTED",
     "ALL_MATCH_TYPES",
     "MATCH_CONTAINS",
     "MATCH_EXACT",

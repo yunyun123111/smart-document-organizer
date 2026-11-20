@@ -14,6 +14,8 @@ JOB_RUNNING = "running"
 JOB_COMPLETED = "completed"
 JOB_CANCELLED = "cancelled"
 JOB_FAILED = "failed"
+# 进程被 kill / 重启时遗留在 running 的任务，启动时统一标记为中断
+JOB_INTERRUPTED = "interrupted"
 
 
 class ProcessingJob(Base, TimestampMixin):

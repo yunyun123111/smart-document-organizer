@@ -44,6 +44,13 @@ async def lifespan(app: FastAPI):
     logger = get_logger("main")
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
     init_db()
+    # 上次进程被 kill/重启时遗留的 running 任务，标记为 interrupted
+    try:
+        from backend.services.processing_service import processing_service
+
+        processing_service.reset_orphan_jobs()
+    except Exception:
+        logger.exception("遗留任务复位失败（不影响启动）")
     # 邮箱接收轮询（后台线程，配置变更后也可动态启停）
     try:
         from backend.services.email_ingest import sync_from_settings

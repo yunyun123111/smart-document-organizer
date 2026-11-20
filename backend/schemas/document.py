@@ -20,6 +20,7 @@ class DocumentListItem(BaseModel):
     confidence: Optional[float] = None
     status: str
     duplicate_of: Optional[str] = None  # 重复文件的来源（原始文件名）
+    text_snippet: Optional[str] = None  # 正文命中片段（含 <mark>），仅搜索时返回
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

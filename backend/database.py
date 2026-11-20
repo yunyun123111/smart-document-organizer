@@ -171,6 +171,10 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         run_migrations(db)
+    # 新建库走 fresh baseline 会跳过迁移、create_all 也不建虚表，此处无条件确保索引存在
+    with SessionLocal() as db:
+        if ensure_fulltext_index(db):
+            logger.info("全文索引 document_fts 就绪")
     logger.info("数据库表结构已就绪: %s", settings.DATABASE_URL)
     with SessionLocal() as db:
         seed_default_categories(db)
@@ -269,7 +273,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 # 无迁移记录的老库按此版本视为"历史结构已齐"（v2~v4 的建索引语句依赖旧表列，
 # 不在最老的库上重跑），只补 v5 及之后新增的迁移
 _LEGACY_BASE_VERSION = 4
@@ -465,6 +469,70 @@ def _migrate_create_external_details(db: Session) -> None:
     db.commit()
 
 
+def ensure_fulltext_index(db: Session) -> bool:
+    """幂等创建正文全文索引（documents.extracted_text 的 FTS5 trigram 虚表）。
+
+    选 trigram 分词器：内置 unicode61 会把整段连续汉字当成一个词，中文搜不到；
+    trigram 按 3 字符滑窗建索引，中文子串可直接命中。
+    用 external content 模式（content='documents'）不重复存正文；
+    写入由触发器同步，任何代码路径都不会漏索引。
+
+    与迁移分离的原因：新建库走 fresh baseline 会跳过所有迁移，而 create_all 不建虚表，
+    所以启动时必须无条件确保索引存在。仅在索引为空时回灌，避免每次启动全量 rebuild。
+    返回索引是否可用（False 表示已降级为 instr 扫描）。
+    """
+    _ensure_schema_migrations(db)
+    try:
+        # 判断虚表是否刚刚创建：只有首次建表才需要回灌（external content 模式下
+        # count(*) FROM document_fts 会回落到 content 表，不能用它判断索引是否为空）
+        existed = db.execute(text(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='document_fts'"
+        )).scalar()
+        db.execute(text(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS document_fts USING fts5("
+            "extracted_text, content='documents', content_rowid='id', tokenize='trigram')"
+        ))
+        db.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS documents_fts_ai AFTER INSERT ON documents BEGIN "
+            "INSERT INTO document_fts(rowid, extracted_text) "
+            "VALUES (new.id, coalesce(new.extracted_text, '')); "
+            "END"
+        ))
+        db.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS documents_fts_ad AFTER DELETE ON documents BEGIN "
+            "INSERT INTO document_fts(document_fts, rowid, extracted_text) "
+            "VALUES ('delete', old.id, coalesce(old.extracted_text, '')); "
+            "END"
+        ))
+        db.execute(text(
+            "CREATE TRIGGER IF NOT EXISTS documents_fts_au AFTER UPDATE OF extracted_text ON documents BEGIN "
+            "INSERT INTO document_fts(document_fts, rowid, extracted_text) "
+            "VALUES ('delete', old.id, coalesce(old.extracted_text, '')); "
+            "INSERT INTO document_fts(rowid, extracted_text) "
+            "VALUES (new.id, coalesce(new.extracted_text, '')); "
+            "END"
+        ))
+        # 首次建表时把已有正文一次性灌入；已存在的索引不再重灌，避免每次启动全量重建
+        if not existed:
+            db.execute(text("INSERT INTO document_fts(document_fts) VALUES('rebuild')"))
+        db.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        # 老版本 SQLite 不支持 trigram 时降级：搜索层会回退 instr 扫描
+        db.rollback()
+        logger.warning("FTS5 trigram 索引创建失败，全文检索降级为 instr 扫描")
+        return False
+
+
+def _migrate_create_fulltext_index(db: Session) -> None:
+    """V8-01: 正文全文索引迁移（建表逻辑见 ensure_fulltext_index）。"""
+    if not ensure_fulltext_index(db):
+        return
+    # 索引可用后再记迁移（避免记录成功但 DDL 失败的不一致）
+    _record_migration(db, 8, "create documents fulltext index")
+    db.commit()
+
+
 MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (2, "create recycle_bin", _migrate_create_recycle_bin),
     (3, "create excel_sources", _migrate_create_excel_sources),
@@ -472,6 +540,7 @@ MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (5, "create fingerprints and anomalies", _migrate_create_fingerprints_and_anomalies),
     (6, "create reconciliation reports", _migrate_create_reconciliation),
     (7, "create external details", _migrate_create_external_details),
+    (8, "create documents fulltext index", _migrate_create_fulltext_index),
 ]
 
 

@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     AI_MAX_RETRIES: int = 2
     AI_MAX_TEXT_LENGTH: int = 1500
 
+    # 落库的正文上限（用于全文检索）。单据类一页约 300~800 字，
+    # 20000 字足以覆盖多页合同，同时避免索引过大。
+    EXTRACTED_TEXT_LIMIT: int = 20000
+
     # 置信度阈值
     AUTO_ARCHIVE_THRESHOLD: float = 0.85
     REVIEW_THRESHOLD: float = 0.60

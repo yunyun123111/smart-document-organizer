@@ -559,6 +559,7 @@ onMounted(async () => {
               <span v-if="row.confidence !== null" class="gray small">{{ (row.confidence * 100).toFixed(0) }}%</span>
               <span class="gray small">{{ fmtSize(row.file_size) }}</span>
             </div>
+            <div v-if="row.text_snippet" class="lib-doc-snippet" v-html="row.text_snippet" />
             <div class="lib-doc-foot">
               <span class="gray small">{{ row.created_at }}</span>
               <el-button link type="danger" size="small" @click.stop="remove(row)">删除</el-button>
@@ -868,6 +869,26 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   line-height: 1.4;
+}
+
+/* 正文命中片段：两行截断，命中词高亮 */
+.lib-doc-snippet {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #909399;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+
+.lib-doc-snippet :deep(mark) {
+  background: #fff3c4;
+  color: #b26a00;
+  padding: 0 1px;
+  border-radius: 2px;
 }
 
 .lib-doc-meta {

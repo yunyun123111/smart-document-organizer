@@ -121,6 +121,11 @@ export function retryFailed(): Promise<ProcessingJob> {
   return http.post('/processing/retry-failed')
 }
 
+/** 最近的任务列表（用于展示上次任务是否被中断） */
+export function getRecentJobs(limit = 5): Promise<ProcessingJob[]> {
+  return http.get('/processing/recent', { params: { limit } })
+}
+
 // ---------- 文档库 ----------
 export interface DocumentListItem {
   id: number
@@ -133,6 +138,8 @@ export interface DocumentListItem {
   confidence: number | null
   status: string
   duplicate_of?: string
+  /** 正文命中片段（含 <mark>），仅关键词搜索时返回 */
+  text_snippet?: string | null
   created_at?: string
   updated_at?: string
 }

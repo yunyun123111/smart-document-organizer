@@ -28,6 +28,7 @@ from backend.models import (
     DocumentField,
     JOB_CANCELLED,
     JOB_COMPLETED,
+    JOB_INTERRUPTED,
     JOB_RUNNING,
     OP_CLASSIFY,
     OP_IMPORT,
@@ -126,6 +127,30 @@ class ProcessingService:
     def has_running(self) -> bool:
         """公开入口：是否有正在运行的任务（供目录监控等外部服务调用）。"""
         return self._has_running()
+
+    def reset_orphan_jobs(self) -> int:
+        """启动时调用：把上次进程遗留的 running 任务标记为 interrupted。
+
+        进程被 kill / 重启后，内存里的任务已消失，但 DB 里仍是 running，
+        仪表盘会误报"有任务在跑"，且日志里看不出真实结束时间。
+        这里统一收口，返回被标记的任务数。
+        """
+        with SessionLocal() as db:
+            jobs = (
+                db.query(ProcessingJob)
+                .filter(ProcessingJob.status == JOB_RUNNING)
+                .all()
+            )
+            if not jobs:
+                return 0
+            now = datetime.now()
+            for job in jobs:
+                job.status = JOB_INTERRUPTED
+                job.finished_at = job.finished_at or now
+            db.commit()
+            count = len(jobs)
+        logger.warning("发现 %d 个遗留 running 任务，已标记为 interrupted", count)
+        return count
 
     def _launch(self, files: list[Path], src: Path) -> ProcessingJob:
         """创建任务并后台启动处理线程；无文件则立即完成。"""
@@ -348,7 +373,7 @@ class ProcessingService:
         doc.document_type = result.document_type or ""
         doc.title = result.title or ""
         doc.confidence = result.confidence.score if result.confidence else None
-        doc.extracted_text = result.text[:5000]
+        doc.extracted_text = result.text[: settings.EXTRACTED_TEXT_LIMIT]
         self._save_fields(db, doc, result)
 
         # 盖章检测（本地图像算法，零 token；失败不影响识别主流程）

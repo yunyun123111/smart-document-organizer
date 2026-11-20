@@ -53,10 +53,21 @@ def _isolated_db():
     settings.ensure_dirs()
     Base.metadata.create_all(bind=engine)
     yield
+    # FTS5 虚表与触发器不在 ORM metadata 中，必须手动删掉，
+    # 否则残留索引会跨用例引用已删除的 documents 表
+    _drop_fulltext_objects()
     Base.metadata.drop_all(bind=engine)
     # schema_migrations 不在 ORM metadata 中，需手动清理，避免跨用例残留
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS schema_migrations"))
+
+
+def _drop_fulltext_objects() -> None:
+    """清理全文索引对象（触发器先删，避免引用已删表）。"""
+    with engine.begin() as conn:
+        for trg in ("documents_fts_ai", "documents_fts_ad", "documents_fts_au"):
+            conn.execute(text(f"DROP TRIGGER IF EXISTS {trg}"))
+        conn.execute(text("DROP TABLE IF EXISTS document_fts"))
 
 
 @pytest.fixture

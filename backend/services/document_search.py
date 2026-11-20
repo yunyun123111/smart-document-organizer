@@ -10,8 +10,10 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 from functools import lru_cache
+from html import escape
 
 from pypinyin import Style, lazy_pinyin
+from sqlalchemy import text
 
 from backend.models import Document, DocumentField
 
@@ -153,6 +155,83 @@ def match_field_ids(
             continue
         matched.add(doc_id)
     return matched
+
+
+# ---- 正文全文检索（OCR/解析出的 extracted_text）----
+# FTS5 trigram 要求关键词 >= 3 字符；更短的中文词（"发票""合同"）走 instr 扫描
+_FTS_MIN_LEN = 3
+_FTS_ID_LIMIT = 5000
+_SNIPPET_RADIUS = 40
+
+
+def _fts_query(keyword: str) -> str:
+    """包成 FTS5 短语，规避 - * : ( ) 等查询语法字符。"""
+    return '"' + keyword.replace('"', '""') + '"'
+
+
+def _instr_doc_ids(db, keyword: str) -> set[int]:
+    """字面子串匹配（instr 不受 LIKE 的 % / _ 通配影响）。"""
+    rows = db.execute(
+        text("SELECT id FROM documents WHERE instr(extracted_text, :kw) > 0 LIMIT :lim"),
+        {"kw": keyword, "lim": _FTS_ID_LIMIT},
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def fulltext_doc_ids(db, keyword: str) -> set[int]:
+    """正文命中的文档 id 集合；索引不可用时自动降级为扫描。"""
+    kw = (keyword or "").strip()
+    if not kw:
+        return set()
+    if len(kw) < _FTS_MIN_LEN:
+        return _instr_doc_ids(db, kw)
+    try:
+        rows = db.execute(
+            text("SELECT rowid FROM document_fts WHERE document_fts MATCH :q LIMIT :lim"),
+            {"q": _fts_query(kw), "lim": _FTS_ID_LIMIT},
+        ).fetchall()
+        return {int(r[0]) for r in rows}
+    except Exception:  # noqa: BLE001
+        return _instr_doc_ids(db, kw)
+
+
+def _hit_snippet(body: str, kw: str, radius: int = _SNIPPET_RADIUS) -> str | None:
+    """截取命中片段：非命中部分 HTML 转义，命中包 <mark>（前端 v-html 安全）。"""
+    idx = body.find(kw)
+    if idx < 0:
+        return None
+    start = max(0, idx - radius)
+    end = min(len(body), idx + len(kw) + radius)
+    return (
+        ("…" if start > 0 else "")
+        + escape(body[start:idx])
+        + "<mark>"
+        + escape(kw)
+        + "</mark>"
+        + escape(body[idx + len(kw) : end])
+        + ("…" if end < len(body) else "")
+    )
+
+
+def fulltext_snippets(db, keyword: str, doc_ids: list[int]) -> dict[int, str]:
+    """返回 {doc_id: 正文命中片段}，供列表高亮。只处理当页文档，代价可控。"""
+    kw = (keyword or "").strip()
+    ids = [int(i) for i in doc_ids if i is not None]
+    if not kw or not ids:
+        return {}
+    rows = db.execute(
+        text(
+            "SELECT id, extracted_text FROM documents WHERE id IN ("
+            + ",".join(str(i) for i in ids)
+            + ")"
+        )
+    ).fetchall()
+    out: dict[int, str] = {}
+    for doc_id, body in rows:
+        snip = _hit_snippet(body or "", kw)
+        if snip:
+            out[int(doc_id)] = snip
+    return out
 
 
 def build_keyword_conditions(db, keyword: str) -> list:

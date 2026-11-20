@@ -36,6 +36,21 @@ def retry_failed(db: Session = Depends(get_db)):
     return db.get(ProcessingJob, job.id)
 
 
+@router.get("/recent", response_model=list[ProcessingJobOut])
+def recent_jobs(limit: int = 5, db: Session = Depends(get_db)):
+    """最近的任务（前端用来展示上次任务是否被中断）。
+
+    必须定义在 /{job_id} 之前，否则 "recent" 会被当作 job_id 解析。
+    """
+    limit = max(1, min(limit, 20))
+    return (
+        db.query(ProcessingJob)
+        .order_by(ProcessingJob.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 @router.get("/{job_id}", response_model=ProcessingJobOut)
 def get_job(job_id: int, db: Session = Depends(get_db)):
     job = db.get(ProcessingJob, job_id)

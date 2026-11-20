@@ -10,6 +10,7 @@ import {
   cancelJob,
   getDocument,
   getJob,
+  getRecentJobs,
   listDocumentCategories,
   listDocuments,
   listFilenameRules,
@@ -31,6 +32,8 @@ import DocumentPreview from '@/components/DocumentPreview.vue'
 
 const uploading = ref(false)
 const running = ref<ProcessingJob | null>(null)
+/** 上次被中断的任务（进程重启遗留，仅提示，不代表正在运行） */
+const lastInterrupted = ref<ProcessingJob | null>(null)
 const inboxFiles = ref<any[]>([])
 const pollTimer = ref<number | null>(null)
 const lastFailed = ref(0)
@@ -288,8 +291,20 @@ function onFilesChange(list: File[]) {
   for (const f of list) handleUpload(f)
 }
 
+/** 读取最近任务：若最新一条是 interrupted，提示上次整理未走完。 */
+async function loadLastJob() {
+  try {
+    const jobs = await getRecentJobs(1)
+    const latest = jobs[0]
+    lastInterrupted.value = latest && latest.status === 'interrupted' ? latest : null
+  } catch {
+    /* 忽略：提示信息非关键路径 */
+  }
+}
+
 async function start() {
   if (running.value) return
+  lastInterrupted.value = null
   try {
     const job = await startProcessing()
     running.value = job
@@ -305,7 +320,32 @@ async function start() {
 }
 
 function isFinished(job: ProcessingJob): boolean {
-  return job.status === 'completed' || job.status === 'cancelled' || job.status === 'failed'
+  return (
+    job.status === 'completed' ||
+    job.status === 'cancelled' ||
+    job.status === 'failed' ||
+    job.status === 'interrupted'
+  )
+}
+
+const JOB_STATUS_TEXT: Record<string, string> = {
+  running: '处理中',
+  completed: '已完成',
+  cancelled: '已取消',
+  failed: '失败',
+  interrupted: '已中断',
+}
+
+function jobStatusText(status: string): string {
+  return JOB_STATUS_TEXT[status] ?? status
+}
+
+function jobTagType(status: string): 'primary' | 'success' | 'warning' | 'info' | 'danger' {
+  if (status === 'running') return 'primary'
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'interrupted') return 'warning'
+  return 'info'
 }
 
 async function finish(job: ProcessingJob) {
@@ -443,6 +483,7 @@ function simDetailRows() {
 
 onMounted(() => {
   loadInbox()
+  loadLastJob()
   window.addEventListener('keydown', onEditorKeydown)
 })
 onUnmounted(() => {
@@ -498,13 +539,28 @@ onUnmounted(() => {
       </el-button>
     </div>
 
+    <!-- 上次任务被中断（进程重启/崩溃遗留） -->
+    <el-alert
+      v-if="lastInterrupted && !running"
+      class="mb12"
+      type="warning"
+      show-icon
+      :closable="false"
+      title="上次整理任务被中断"
+    >
+      <span>
+        任务 #{{ lastInterrupted.id }} 处理到 {{ lastInterrupted.processed_files }}/{{ lastInterrupted.total_files
+        }} 就中断了（程序重启或异常退出）。点击下方「开始整理」可继续处理收件箱剩余文件。
+      </span>
+    </el-alert>
+
     <!-- 任务进度 -->
     <template v-if="running">
       <el-card shadow="hover" class="job-card">
         <div class="job-head">
           <span>任务 #{{ running.id }}</span>
-          <el-tag :type="running.status === 'running' ? 'primary' : 'success'">
-            {{ running.status === 'running' ? '处理中' : running.status }}
+          <el-tag :type="jobTagType(running.status)">
+            {{ jobStatusText(running.status) }}
           </el-tag>
         </div>
         <el-progress :percentage="percent()" :status="running.status === 'completed' ? 'success' : undefined" />

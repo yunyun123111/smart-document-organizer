@@ -30,6 +30,8 @@ from backend.models import (
     Document,
     JOB_CANCELLED,
     JOB_COMPLETED,
+    JOB_INTERRUPTED,
+    JOB_RUNNING,
     ProcessingJob,
 )
 from backend.services.classifier import ClassifierService
@@ -86,6 +88,27 @@ def _docs() -> list[Document]:
 
 
 class TestEmptyInbox:
+    def test_reset_orphan_jobs(self, env):
+        """启动复位：遗留 running 任务 → interrupted，且幂等。
+
+        回归：进程被 kill/重启后 DB 里 job 永远 running，仪表盘误报"有任务在跑"。
+        """
+        with SessionLocal() as db:
+            job = ProcessingJob(status=JOB_RUNNING, total_files=3, processed_files=1)
+            db.add(job)
+            db.commit()
+            job_id = job.id
+
+        assert processing_service.reset_orphan_jobs() >= 1
+
+        with SessionLocal() as db:
+            db_job = db.get(ProcessingJob, job_id)
+            assert db_job.status == JOB_INTERRUPTED
+            assert db_job.finished_at is not None
+
+        # 再调一次不应重复统计
+        assert processing_service.reset_orphan_jobs() == 0
+
     def test_empty_inbox_completes_immediately(self, env):
         """空收件箱：start_job 返回后任务立即为 completed。
 
@@ -102,6 +125,32 @@ class TestEmptyInbox:
 
     def test_cancel_unknown_job_returns_false(self, env):
         assert processing_service.cancel_job(99999) is False
+
+
+class TestRecentJobsApi:
+    """GET /api/processing/recent：前端据此提示"上次任务被中断"。
+
+    回归点：/recent 必须定义在 /{job_id} 之前，否则会被当作 job_id 解析（422）。
+    """
+
+    def test_recent_lists_latest_first(self):
+        from fastapi.testclient import TestClient
+        from backend.main import app
+
+        with SessionLocal() as db:
+            db.add(ProcessingJob(status=JOB_COMPLETED, total_files=2, processed_files=2))
+            db.commit()
+            db.add(ProcessingJob(status=JOB_INTERRUPTED, total_files=10, processed_files=4))
+            db.commit()
+            interrupted_id = db.query(ProcessingJob).order_by(ProcessingJob.id.desc()).first().id
+
+        with TestClient(app) as client:
+            r = client.get("/api/processing/recent", params={"limit": 2})
+            assert r.status_code == 200
+            data = r.json()
+            assert data[0]["id"] == interrupted_id
+            assert data[0]["status"] == JOB_INTERRUPTED
+            assert data[0]["processed_files"] == 4
 
 
 class TestProcessing:
