@@ -41,9 +41,11 @@ logger = get_logger("api.review")
 from backend.services.review_support import (
     _category_template,
     _fields_dict,
-    _learn_template,
     _render_suggestion,
     _upsert_fields,
+    after_confirm,
+    learning_feedback,
+    record_decision,
 )
 
 
@@ -220,10 +222,13 @@ def approve_review(doc_id: int, req: ReviewApproveRequest, db: Session = Depends
     if not doc:
         raise HTTPException(status_code=404, detail="文档不在待审核列表")
 
+    # 留痕要求：AI 建议值必须在任何覆盖动作之前取到
+    suggested_type = doc.document_type or ""
     if req.document_type is not None:
         doc.document_type = req.document_type
 
     fields = _fields_dict(doc)  # 本次请求前的字段值
+    suggested_category = fields.get("suggested_category") or ""
     category_path = (
         req.category_path
         or (req.fields or {}).get("suggested_category")
@@ -258,9 +263,16 @@ def approve_review(doc_id: int, req: ReviewApproveRequest, db: Session = Depends
     )
     if not ar.success:
         raise HTTPException(status_code=400, detail=ar.error or "归档失败")
-    # 学习同类文件模板（下次自动归档）
-    _learn_template(db, doc, category_path)
-    return {"ok": True, "path": str(ar.document_path)}
+    # 学模板 + 沉淀样本 + 留痕 + 候选规则，四条路径统一入口
+    feedback = after_confirm(
+        db,
+        doc,
+        category_path=category_path,
+        suggested_category=suggested_category,
+        suggested_document_type=suggested_type,
+        source="single",
+    )
+    return {"ok": True, "path": str(ar.document_path), **learning_feedback(feedback)}
 
 
 @router.post("/{doc_id}/skip")
@@ -273,8 +285,19 @@ def skip_review(doc_id: int, db: Session = Depends(get_db)):
     )
     if not doc:
         raise HTTPException(status_code=404, detail="文档不在待审核列表")
+    suggested_category = _fields_dict(doc).get("suggested_category") or ""
     doc.status = STATUS_SKIPPED
     db.commit()
+    record_decision(
+        db,
+        doc,
+        action="skip",
+        final_category=suggested_category,
+        final_document_type=doc.document_type,
+        suggested_category=suggested_category,
+        suggested_document_type=doc.document_type,
+        note="跳过待审",
+    )
     return {"ok": True}
 
 
@@ -299,6 +322,8 @@ def batch_approve(req: BatchApproveRequest, db: Session = Depends(get_db)):
             results.append({"id": doc_id, "success": False, "error": "不存在或不在待审核列表"})
             continue
         fields = _fields_dict(doc)
+        suggested_category = fields.get("suggested_category") or ""
+        suggested_type = doc.document_type or ""
         category_path = (
             req.category_path
             or fields.get("suggested_category")
@@ -318,8 +343,18 @@ def batch_approve(req: BatchApproveRequest, db: Session = Depends(get_db)):
             document_id=doc.id,
         )
         if ar.success:
-            _learn_template(db, doc, category_path)
-            results.append({"id": doc_id, "success": True, "path": str(ar.document_path)})
+            feedback = after_confirm(
+                db,
+                doc,
+                category_path=category_path,
+                suggested_category=suggested_category,
+                suggested_document_type=suggested_type,
+                source="batch",
+            )
+            results.append({
+                "id": doc_id, "success": True, "path": str(ar.document_path),
+                **learning_feedback(feedback),
+            })
         else:
             results.append({"id": doc_id, "success": False, "error": ar.error or "归档失败"})
     ok = sum(1 for r in results if r["success"])

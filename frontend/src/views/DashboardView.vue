@@ -5,17 +5,20 @@ import * as echarts from 'echarts'
 import {
   getDashboardStats,
   getDashboardTrends,
+  getReviewQuality,
   listDocuments,
   openDocumentFile,
   type DashboardAlert,
   type DashboardStats,
   type DashboardTrends,
   type DocumentListItem,
+  type ReviewQuality,
 } from '@/api'
 
 const router = useRouter()
 const stats = ref<DashboardStats | null>(null)
 const trends = ref<DashboardTrends | null>(null)
+const quality = ref<ReviewQuality | null>(null)
 const loading = ref(false)
 
 // 趋势图：时间范围（7/14/30 天）+ 对比模式
@@ -93,6 +96,11 @@ async function load() {
   try {
     stats.value = await getDashboardStats()
     trends.value = await getDashboardTrends(trendDays.value)
+    try {
+      quality.value = await getReviewQuality()
+    } catch {
+      quality.value = null
+    }
     await nextTick()
     renderCharts()
   } finally {
@@ -268,6 +276,12 @@ function go(to: string) {
   router.push(to)
 }
 
+/** 置信度桶条形宽度：按最大桶归一，避免小样本全满格。 */
+function bucketPercent(count: number): string {
+  const max = Math.max(1, ...(quality.value?.confidence_buckets.map((b) => b.count) ?? [1]))
+  return `${Math.round((count / max) * 100)}%`
+}
+
 function alertType(level: string): 'error' | 'warning' | 'info' | 'success' {
   if (level === 'error') return 'error'
   if (level === 'warning') return 'warning'
@@ -357,6 +371,67 @@ function restoreAlerts() {
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 识别质量（人工改判 / 学习成果） -->
+    <el-card v-if="quality && quality.total_decisions > 0" shadow="never" class="section">
+      <template #header>
+        <div class="card-head">
+          <span>识别质量（基于 {{ quality.total_decisions }} 次审核记录）</span>
+        </div>
+      </template>
+      <el-row :gutter="16">
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="q-metric">
+            <div class="q-value" :class="quality.category_change_rate >= 30 ? 'q-warn' : 'q-ok'">
+              {{ quality.category_change_rate }}%
+            </div>
+            <div class="q-label">人工改判分类率</div>
+            <div class="gray small">{{ quality.category_changed }} / {{ quality.approved }} 次确认</div>
+          </div>
+        </el-col>
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="q-metric">
+            <div class="q-value">{{ quality.samples_total }}</div>
+            <div class="q-label">已沉淀格式样本</div>
+            <div class="gray small">其中审核时自动学习 {{ quality.samples_auto }} 份</div>
+          </div>
+        </el-col>
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="q-metric">
+            <div class="q-value" :class="quality.pending_candidates > 0 ? 'q-warn' : ''">
+              {{ quality.pending_candidates }}
+            </div>
+            <div class="q-label">
+              待采纳候选规则
+              <el-link v-if="quality.pending_candidates > 0" type="primary" :underline="false" @click="go('/settings')">
+                去处理
+              </el-link>
+            </div>
+            <div class="gray small">由人工改判沉淀，需手动采纳</div>
+          </div>
+        </el-col>
+        <el-col :xs="24" :sm="12" :md="6">
+          <div class="q-metric">
+            <div class="q-value">{{ quality.pending_review }}</div>
+            <div class="q-label">待确认积压</div>
+            <div class="gray small">跳过 {{ quality.skipped }} 份 · 改类型 {{ quality.type_changed }} 次</div>
+          </div>
+        </el-col>
+      </el-row>
+      <div v-if="quality.confidence_buckets.some((b) => b.count > 0)" class="q-buckets">
+        <div class="gray small mb4">AI 置信度分布（条目占比 / 其中被改判）</div>
+        <div v-for="b in quality.confidence_buckets" :key="b.label" class="q-bucket-row">
+          <span class="q-bucket-label">{{ b.label }}</span>
+          <div class="q-bucket-bar">
+            <div
+              class="q-bucket-fill"
+              :style="{ width: bucketPercent(b.count) }"
+            ></div>
+          </div>
+          <span class="q-bucket-num">{{ b.count }} 次<span class="gray"> · 改判 {{ b.changed }}</span></span>
+        </div>
+      </div>
+    </el-card>
 
     <!-- 趋势图 -->
     <el-row :gutter="16" class="section">
@@ -515,6 +590,41 @@ function restoreAlerts() {
   gap: 12px;
   flex-wrap: wrap;
 }
+.q-metric { text-align: center; padding: 6px 0 10px; }
+.q-value { font-size: 26px; font-weight: 700; color: #409eff; }
+.q-value.q-warn { color: #e6a23c; }
+.q-value.q-ok { color: #67c23a; }
+.q-label {
+  font-size: 13px;
+  color: #303133;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.q-buckets {
+  margin-top: 10px;
+  border-top: 1px dashed #ebeef5;
+  padding-top: 10px;
+}
+.q-bucket-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.q-bucket-label { width: 110px; font-size: 12px; color: #606266; }
+.q-bucket-bar {
+  flex: 1;
+  height: 8px;
+  background: #f0f2f5;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.q-bucket-fill { height: 100%; background: #409eff; }
+.q-bucket-num { width: 130px; font-size: 12px; color: #303133; text-align: right; }
+.mb4 { margin-bottom: 4px; }
 .alert-card {
   border-color: #f3d19e;
 }

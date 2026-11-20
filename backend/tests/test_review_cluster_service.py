@@ -187,7 +187,8 @@ class TestBatchConfirm:
         monkeypatch.setattr(
             rc_mod, "_render_suggestion", lambda db, doc, category_path, fields: "t_renamed.pdf"
         )
-        monkeypatch.setattr(rc_mod, "_learn_template", lambda db, doc, category_path: None)
+        # 归档后处理会写模板/样本/留痕，这里只验证簇内归档行为，整体替换掉
+        monkeypatch.setattr(rc_mod, "after_confirm", lambda *a, **k: {})
 
         result = ReviewClusterService.batch_confirm_cluster(db, base.id, [t1.id, t2.id])
         assert result["success_count"] == 2
@@ -213,7 +214,7 @@ class TestBatchConfirm:
 
         monkeypatch.setattr(rc_mod.ArchiveService, "archive", self._ok_archive)
         monkeypatch.setattr(rc_mod, "_render_suggestion", lambda *a, **k: "x.pdf")
-        monkeypatch.setattr(rc_mod, "_learn_template", lambda *a, **k: None)
+        monkeypatch.setattr(rc_mod, "after_confirm", lambda *a, **k: {})
 
         result = ReviewClusterService.batch_confirm_cluster(db, base.id, [ok.id, already.id, 9999])
         assert result["success_count"] == 1
@@ -230,7 +231,7 @@ class TestBatchConfirm:
 
         monkeypatch.setattr(rc_mod.ArchiveService, "archive", fail_archive)
         monkeypatch.setattr(rc_mod, "_render_suggestion", lambda *a, **k: "x.pdf")
-        monkeypatch.setattr(rc_mod, "_learn_template", lambda *a, **k: None)
+        monkeypatch.setattr(rc_mod, "after_confirm", lambda *a, **k: {})
 
         result = ReviewClusterService.batch_confirm_cluster(db, base.id, [t1.id])
         assert result["success_count"] == 0

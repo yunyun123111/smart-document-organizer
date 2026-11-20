@@ -273,7 +273,7 @@ def seed_default_rename_templates(db: Session) -> int:
 #   3. 在 MIGRATIONS 追加 (版本号, 描述, 迁移函数)；
 #      迁移函数必须幂等（先检查列/表是否存在，存在则跳过）
 _SCHEMA_MIGRATIONS_TABLE = "schema_migrations"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 # 无迁移记录的老库按此版本视为"历史结构已齐"（v2~v4 的建索引语句依赖旧表列，
 # 不在最老的库上重跑），只补 v5 及之后新增的迁移
 _LEGACY_BASE_VERSION = 4
@@ -469,6 +469,66 @@ def _migrate_create_external_details(db: Session) -> None:
     db.commit()
 
 
+def _migrate_create_review_decisions(db: Session) -> None:
+    """V9-01: 新增 review_decisions 表（人工审核决策留痕）。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS review_decisions ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "document_id INTEGER, "
+        "action VARCHAR(20) NOT NULL DEFAULT 'approve', "
+        "source VARCHAR(20) NOT NULL DEFAULT 'single', "
+        "suggested_category VARCHAR(500), "
+        "suggested_document_type VARCHAR(200), "
+        "confidence FLOAT, "
+        "final_category VARCHAR(500), "
+        "final_document_type VARCHAR(200), "
+        "category_changed BOOLEAN NOT NULL DEFAULT 0, "
+        "type_changed BOOLEAN NOT NULL DEFAULT 0, "
+        "sample_id INTEGER, "
+        "rule_candidate_id INTEGER, "
+        "note TEXT NOT NULL DEFAULT '', "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_review_decisions_document_id ON review_decisions (document_id)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_review_decisions_created_at ON review_decisions (created_at)"
+    ))
+    _record_migration(db, 9, "create review decisions")
+    db.commit()
+
+
+def _migrate_create_rule_candidates(db: Session) -> None:
+    """V10-01: 新增 rule_candidates 表（人工改判沉淀的候选规则）。"""
+    db.execute(text(
+        "CREATE TABLE IF NOT EXISTS rule_candidates ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "kind VARCHAR(30) NOT NULL DEFAULT 'filename_prefix', "
+        "keyword VARCHAR(200) NOT NULL, "
+        "category_path VARCHAR(500) NOT NULL, "
+        "document_type VARCHAR(200), "
+        "from_doc_id INTEGER, "
+        "from_decision_id INTEGER, "
+        "status VARCHAR(20) NOT NULL DEFAULT 'pending', "
+        "adopted_rule_id INTEGER, "
+        "hit_total INTEGER NOT NULL DEFAULT 0, "
+        "hit_target INTEGER NOT NULL DEFAULT 0, "
+        "note TEXT NOT NULL DEFAULT '', "
+        "created_at DATETIME NOT NULL, "
+        "updated_at DATETIME NOT NULL)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_rule_candidates_keyword ON rule_candidates (keyword)"
+    ))
+    db.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_rule_candidates_status ON rule_candidates (status)"
+    ))
+    _record_migration(db, 10, "create rule candidates")
+    db.commit()
+
+
 def ensure_fulltext_index(db: Session) -> bool:
     """幂等创建正文全文索引（documents.extracted_text 的 FTS5 trigram 虚表）。
 
@@ -541,6 +601,8 @@ MIGRATIONS: list[tuple[int, str, Callable[[Session], None]]] = [
     (6, "create reconciliation reports", _migrate_create_reconciliation),
     (7, "create external details", _migrate_create_external_details),
     (8, "create documents fulltext index", _migrate_create_fulltext_index),
+    (9, "create review decisions", _migrate_create_review_decisions),
+    (10, "create rule candidates", _migrate_create_rule_candidates),
 ]
 
 

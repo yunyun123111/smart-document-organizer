@@ -90,6 +90,14 @@ async function batchApproveAll() {
       const errs = res.results.filter((r) => !r.success).map((r) => r.error || '未知错误')
       ElMessageBox.alert(`失败原因：${errs.join('；')}`, '部分归档失败', { type: 'warning' })
     }
+    const learnedCount = res.results.filter((r) => r.success && r.learned_sample).length
+    if (learnedCount) ElMessage.info(`本次沉淀 ${learnedCount} 份格式样本`)
+    const candKeywords = new Set(
+      res.results.map((r) => r.candidate_rule?.keyword).filter((k): k is string => !!k),
+    )
+    if (candKeywords.size) {
+      ElMessage.info(`新发现 ${candKeywords.size} 条候选规则，可在「设置 → 文件名规则」查看`)
+    }
     if (currentId.value && selectedIds.value.includes(currentId.value)) {
       currentId.value = null
       detail.value = null
@@ -175,17 +183,36 @@ async function confirmArchive() {
   if (!detail.value) return
   saving.value = true
   try {
-    await approveReview(detail.value.document.id, {
+    const res = await approveReview(detail.value.document.id, {
       document_type: docType.value || undefined,
       category_path: category.value,
       filename: customFilename.value || undefined,
       fields: editableFields.value,
     })
     ElMessage.success('已归档')
+    showLearningFeedback(res)
     closeReview()
     await load()
   } finally {
     saving.value = false
+  }
+}
+
+/** 确认后告诉用户"这次教了机器什么"，否则沉淀样本/候选规则完全不可见。 */
+function showLearningFeedback(res?: {
+  learned_sample?: boolean
+  candidate_rule?: { keyword: string; category_path: string; hit_total: number } | null
+}) {
+  if (res?.learned_sample) {
+    ElMessage.info('已沉淀为格式样本，下次同类单据可直接识别')
+  }
+  if (res?.candidate_rule) {
+    ElMessageBox.alert(
+      `人工改判的分类可固化为规则：文件名含「${res.candidate_rule.keyword}」的 ${res.candidate_rule.hit_total} 份文件 → ${res.candidate_rule.category_path}。` +
+        '采纳后会跳过识别直接归档，请到「设置 → 文件名规则」确认后再采纳。',
+      '发现一条候选规则',
+      { type: 'success' },
+    )
   }
 }
 

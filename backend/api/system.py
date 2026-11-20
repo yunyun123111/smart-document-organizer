@@ -8,12 +8,18 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.database import get_db
 from backend.models import (
+    CANDIDATE_PENDING,
+    DECISION_APPROVE,
+    DECISION_SKIP,
     JOB_RUNNING,
     STATUS_ARCHIVED,
     STATUS_NEED_REVIEW,
     STATUS_RECYCLED,
     Document,
+    DocumentSample,
     ProcessingJob,
+    ReviewDecision,
+    RuleCandidate,
 )
 
 from backend.services.dashboard_service import get_dashboard_trends
@@ -111,6 +117,107 @@ def dashboard_stats(db: Session = Depends(get_db)):
         "inbox_root": str(settings.INBOX_ROOT),
         "ai_enabled": settings.AI_ENABLED and bool(settings.AI_BASE_URL),
         "ocr_enabled": settings.OCR_ENABLED,
+    }
+
+
+@router.get("/dashboard/review-quality")
+def dashboard_review_quality(db: Session = Depends(get_db)):
+    """识别质量看板：人工改判率、学习成果、置信度分布、积压。
+
+    数据源是 review_decisions（每次确认/跳过都留痕），不做任何推断。
+    改判率 = 人工改了 AI 分类的确认次数 / 确认总次数。
+    """
+    total_decisions = db.query(func.count(ReviewDecision.id)).scalar() or 0
+    approved = (
+        db.query(func.count(ReviewDecision.id))
+        .filter(ReviewDecision.action == DECISION_APPROVE)
+        .scalar()
+        or 0
+    )
+    skipped = (
+        db.query(func.count(ReviewDecision.id))
+        .filter(ReviewDecision.action == DECISION_SKIP)
+        .scalar()
+        or 0
+    )
+    category_changed = (
+        db.query(func.count(ReviewDecision.id))
+        .filter(ReviewDecision.category_changed.is_(True))
+        .scalar()
+        or 0
+    )
+    type_changed = (
+        db.query(func.count(ReviewDecision.id))
+        .filter(ReviewDecision.type_changed.is_(True))
+        .scalar()
+        or 0
+    )
+
+    samples_total = db.query(func.count(DocumentSample.id)).scalar() or 0
+    samples_auto = (
+        db.query(func.count(DocumentSample.id))
+        .filter(DocumentSample.note.like("由审核确认自动学习%"))
+        .scalar()
+        or 0
+    )
+    pending_candidates = (
+        db.query(func.count(RuleCandidate.id))
+        .filter(RuleCandidate.status == CANDIDATE_PENDING)
+        .scalar()
+        or 0
+    )
+    pending_review = (
+        db.query(func.count(Document.id))
+        .filter(Document.status == STATUS_NEED_REVIEW)
+        .scalar()
+        or 0
+    )
+
+    # 置信度分桶：低置信的单据最该被改判，这里的比例能说明阈值是否偏松
+    bucket_specs = [
+        (0.0, 0.5, "低 (<0.5)"),
+        (0.5, 0.7, "中低 (0.5~0.7)"),
+        (0.7, 0.85, "中高 (0.7~0.85)"),
+        (0.85, 1.01, "高 (≥0.85)"),
+    ]
+    buckets = []
+    for lo, hi, label in bucket_specs:
+        cnt = (
+            db.query(func.count(ReviewDecision.id))
+            .filter(
+                ReviewDecision.confidence.isnot(None),
+                ReviewDecision.confidence >= lo,
+                ReviewDecision.confidence < hi,
+            )
+            .scalar()
+            or 0
+        )
+        changed = (
+            db.query(func.count(ReviewDecision.id))
+            .filter(
+                ReviewDecision.confidence.isnot(None),
+                ReviewDecision.confidence >= lo,
+                ReviewDecision.confidence < hi,
+                ReviewDecision.category_changed.is_(True),
+            )
+            .scalar()
+            or 0
+        )
+        buckets.append({"label": label, "count": cnt, "changed": changed})
+
+    rate = round(category_changed / approved * 100, 1) if approved else 0.0
+    return {
+        "total_decisions": total_decisions,
+        "approved": approved,
+        "skipped": skipped,
+        "category_changed": category_changed,
+        "type_changed": type_changed,
+        "category_change_rate": rate,
+        "samples_total": samples_total,
+        "samples_auto": samples_auto,
+        "pending_candidates": pending_candidates,
+        "pending_review": pending_review,
+        "confidence_buckets": buckets,
     }
 
 

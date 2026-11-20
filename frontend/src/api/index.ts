@@ -57,6 +57,31 @@ export function getDashboardTrends(days: number = 14): Promise<DashboardTrends> 
   return http.get('/system/dashboard/trends', { params: { days } })
 }
 
+// ---------- 识别质量（人工改判 / 学习成果） ----------
+export interface ConfidenceBucket {
+  label: string
+  count: number
+  changed: number
+}
+
+export interface ReviewQuality {
+  total_decisions: number
+  approved: number
+  skipped: number
+  category_changed: number
+  type_changed: number
+  category_change_rate: number
+  samples_total: number
+  samples_auto: number
+  pending_candidates: number
+  pending_review: number
+  confidence_buckets: ConfidenceBucket[]
+}
+
+export function getReviewQuality(): Promise<ReviewQuality> {
+  return http.get('/system/dashboard/review-quality')
+}
+
 // ---------- 文件关联（重定位） ----------
 export interface MissingDoc {
   id: number
@@ -322,10 +347,24 @@ export function updateReview(id: number, data: { document_type?: string; fields?
   return http.put(`/review/${id}`, data)
 }
 
+export interface CandidateRuleBrief {
+  id: number
+  keyword: string
+  category_path: string
+  hit_total: number
+  hit_target: number
+}
+
+export interface LearningFeedback {
+  learned_sample: boolean
+  sample_id?: number | null
+  candidate_rule?: CandidateRuleBrief | null
+}
+
 export function approveReview(
   id: number,
   data: { document_type?: string; category_path?: string; filename?: string; fields?: Record<string, string> },
-): Promise<{ ok: boolean; path?: string }> {
+): Promise<{ ok: boolean; path?: string } & LearningFeedback> {
   return http.post(`/review/${id}/approve`, data)
 }
 
@@ -366,7 +405,7 @@ export function batchApprove(
   ok: boolean
   success_count: number
   failed_count: number
-  results: { id: number; success: boolean; path?: string; error?: string }[]
+  results: ({ id: number; success: boolean; path?: string; error?: string } & LearningFeedback)[]
 }> {
   return http.post('/review/batch-approve', { doc_ids, ...(data || {}) })
 }
@@ -706,6 +745,35 @@ export function updateFilenameRule(id: number, data: Partial<FilenameRule>): Pro
 
 export function deleteFilenameRule(id: number): Promise<{ ok: boolean }> {
   return http.delete(`/filename-rules/${id}`)
+}
+
+// ---------- 候选规则（人工改判沉淀，需显式采纳） ----------
+export interface RuleCandidate {
+  id: number
+  kind: string
+  keyword: string
+  category_path: string
+  document_type?: string | null
+  from_doc_id?: number | null
+  from_decision_id?: number | null
+  status: string
+  adopted_rule_id?: number | null
+  hit_total: number
+  hit_target: number
+  note: string
+  created_at?: string | null
+}
+
+export function listRuleCandidates(status = 'pending'): Promise<RuleCandidate[]> {
+  return http.get('/rule-candidates', { params: { status } })
+}
+
+export function adoptRuleCandidate(id: number): Promise<FilenameRule> {
+  return http.post(`/rule-candidates/${id}/adopt`)
+}
+
+export function rejectRuleCandidate(id: number): Promise<{ ok: boolean }> {
+  return http.post(`/rule-candidates/${id}/reject`)
 }
 
 

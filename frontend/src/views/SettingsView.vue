@@ -12,6 +12,9 @@ import {
   relocateDocuments,
   listCategoriesFlat,
   listFilenameRules,
+  adoptRuleCandidate,
+  listRuleCandidates,
+  rejectRuleCandidate,
   updateFilenameRule,
   updateSettings,
   listExcelSources,
@@ -23,6 +26,7 @@ import {
   type ExcelSource,
   type CategoryNode,
   type FilenameRule,
+  type RuleCandidate,
   type Settings,
   type BackupInfo,
   createBackup,
@@ -136,6 +140,7 @@ function configLevelLabel(l: string): string {
 
 // 文件名规则
 const fnRules = ref<FilenameRule[]>([])
+const fnCandidates = ref<RuleCandidate[]>([])
 const flatCats = ref<CategoryNode[]>([])
 const fnForm = ref({ pattern: '', category_id: 0, note: '' })
 const fnLoading = ref(false)
@@ -388,6 +393,35 @@ async function loadFnRules() {
   } finally {
     fnLoading.value = false
   }
+  // 候选规则独立加载：失败不影响规则表
+  try {
+    fnCandidates.value = await listRuleCandidates('pending')
+  } catch {
+    fnCandidates.value = []
+  }
+}
+
+async function adoptCandidate(c: RuleCandidate) {
+  await ElMessageBox.confirm(
+    `采纳后，文件名含「${c.keyword}」的文件将直接归档到「${c.category_path}」，不再解析内容。确定采纳？`,
+    '采纳候选规则',
+    { type: 'warning' },
+  )
+  await adoptRuleCandidate(c.id)
+  ElMessage.success(`已采纳：${c.keyword} → ${c.category_path}`)
+  await loadFnRules()
+}
+
+async function rejectCandidate(c: RuleCandidate) {
+  await rejectRuleCandidate(c.id)
+  fnCandidates.value = fnCandidates.value.filter((x) => x.id !== c.id)
+  ElMessage.success('已忽略该候选')
+}
+
+function candidateHitText(c: RuleCandidate): string {
+  const off = c.hit_total - c.hit_target
+  if (off <= 0) return `当前库命中 ${c.hit_total} 份，均已在目标分类`
+  return `当前库命中 ${c.hit_total} 份，其中 ${off} 份现在不在该分类（采纳后会改归到这里）`
 }
 
 function catName(id: number): string {
@@ -823,6 +857,34 @@ onMounted(() => { load(); loadExcelSources() })
       <div class="gray small mb8">
         适用业务编码明确的文件，如 <code>SJWLXS</code>=销售合同、<code>SJWLCG</code>=采购合同。命中后直接归档到对应分类、保持原名，零识别消耗。
       </div>
+
+      <div v-if="fnCandidates.length" class="cand-block">
+        <div class="cand-head">
+          <el-tag type="warning" size="small" effect="dark">待采纳</el-tag>
+          <span class="cand-title">审核改判发现的候选规则（{{ fnCandidates.length }} 条）</span>
+          <span class="gray small">采纳前请核对命中数量：采纳后同前缀文件会直接归档，不再走识别</span>
+        </div>
+        <el-table :data="fnCandidates" size="small" style="width: 100%">
+          <el-table-column label="文件名前缀" width="130">
+            <template #default="{ row }"><code>{{ row.keyword }}</code></template>
+          </el-table-column>
+          <el-table-column prop="category_path" label="归档到" min-width="160" />
+          <el-table-column label="影响范围" min-width="280">
+            <template #default="{ row }">
+              <span :class="row.hit_total - row.hit_target > 0 ? 'warn-text' : 'gray'">
+                {{ candidateHitText(row) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="130">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="adoptCandidate(row)">采纳</el-button>
+              <el-button link type="danger" @click="rejectCandidate(row)">忽略</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+
       <el-table :data="fnRules" size="small" v-loading="fnLoading" style="width: 100%">
         <el-table-column prop="pattern" label="文件名模式" min-width="140" />
         <el-table-column label="归档分类" min-width="180">
@@ -994,4 +1056,14 @@ code { background: #f0f2f5; padding: 0 4px; border-radius: 3px; }
 .excel-sheet { margin-top: 8px; padding: 6px 10px; background: #fafafa; border-radius: 4px; }
 .sheet-name { font-weight: 600; margin-right: 8px; }
 .map-chip { background: #e6f0ff; color: #3c6ef0; border-radius: 3px; padding: 0 5px; margin-right: 4px; }
+.cand-block {
+  border: 1px solid #faecd8;
+  background: #fdf6ec;
+  border-radius: 6px;
+  padding: 10px 10px 2px;
+  margin-bottom: 12px;
+}
+.cand-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.cand-title { font-weight: 600; font-size: 13px; }
+.warn-text { color: #e6a23c; }
 </style>

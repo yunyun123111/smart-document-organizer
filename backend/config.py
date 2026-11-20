@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     AUTO_ARCHIVE_THRESHOLD: float = 0.85
     REVIEW_THRESHOLD: float = 0.60
 
+    # 人工确认归档时，把该文档沉淀为格式样本（同类型+同分类已有样本则跳过）
+    LEARN_SAMPLE_ON_APPROVE: bool = True
+
     # 置信度权重
     CONF_RULE_WEIGHT: float = 0.40
     CONF_FIELD_WEIGHT: float = 0.20

@@ -35,9 +35,10 @@ from backend.utils.logger import get_logger
 # 复用人工审核流程的既有实现（渲染建议名 / 字段落库 / 模板学习），避免逻辑漂移
 from backend.services.review_support import (
     _fields_dict,
-    _learn_template,
     _render_suggestion,
     _upsert_fields,
+    after_confirm,
+    learning_feedback,
 )
 
 logger = get_logger("review_cluster")
@@ -200,6 +201,8 @@ class ReviewClusterService:
 
             try:
                 fields = _fields_dict(doc)
+                suggested_category = fields.get("suggested_category") or ""
+                suggested_type = doc.document_type or ""
                 fields["suggested_category"] = category_path
                 _upsert_fields(db, doc, {"suggested_category": category_path})
                 db.commit()  # 先落库字段与分类，归档失败时不丢失
@@ -219,8 +222,18 @@ class ReviewClusterService:
                     document_id=doc.id,
                 )
                 if ar.success:
-                    _learn_template(db, doc, category_path)
-                    results.append({"id": doc_id, "success": True, "path": str(ar.document_path)})
+                    feedback = after_confirm(
+                        db,
+                        doc,
+                        category_path=category_path,
+                        suggested_category=suggested_category,
+                        suggested_document_type=suggested_type,
+                        source="cluster",
+                    )
+                    results.append({
+                        "id": doc_id, "success": True, "path": str(ar.document_path),
+                        **learning_feedback(feedback),
+                    })
                 else:
                     results.append({"id": doc_id, "success": False, "error": ar.error or "归档失败"})
             except Exception as e:  # noqa: BLE001

@@ -118,6 +118,25 @@ from backend.models.external_detail import (
     KIND_RECEIPT,
     ExternalDetail,
 )
+from backend.models.review_decision import (
+    ALL_DECISION_ACTIONS,
+    ALL_DECISION_SOURCES,
+    DECISION_APPROVE,
+    DECISION_SKIP,
+    SOURCE_BATCH,
+    SOURCE_CLUSTER,
+    SOURCE_SINGLE,
+    ReviewDecision,
+)
+from backend.models.rule_candidate import (
+    ALL_CANDIDATE_KINDS,
+    ALL_CANDIDATE_STATUSES,
+    CANDIDATE_ADOPTED,
+    CANDIDATE_PENDING,
+    CANDIDATE_REJECTED,
+    KIND_FILENAME_PREFIX,
+    RuleCandidate,
+)
 
 __all__ = [
     "Base",
@@ -229,4 +248,19 @@ __all__ = [
     "ALL_KINDS",
     "KIND_RECEIPT",
     "KIND_PAYMENT",
+    "ReviewDecision",
+    "ALL_DECISION_ACTIONS",
+    "ALL_DECISION_SOURCES",
+    "DECISION_APPROVE",
+    "DECISION_SKIP",
+    "SOURCE_SINGLE",
+    "SOURCE_BATCH",
+    "SOURCE_CLUSTER",
+    "RuleCandidate",
+    "ALL_CANDIDATE_KINDS",
+    "ALL_CANDIDATE_STATUSES",
+    "CANDIDATE_PENDING",
+    "CANDIDATE_ADOPTED",
+    "CANDIDATE_REJECTED",
+    "KIND_FILENAME_PREFIX",
 ]
