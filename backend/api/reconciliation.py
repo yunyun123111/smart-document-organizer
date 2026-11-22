@@ -35,6 +35,11 @@ from backend.models import (
     SEVERITY_CRITICAL,
 )
 from backend.schemas.reconciliation import (
+    CellCandidateOut,
+    CellCandidatesResponse,
+    CellCheckOut,
+    CellDocumentOut,
+    CellDocumentsResponse,
     DiffOut,
     ExternalBatchListResponse,
     ExternalBatchOut,
@@ -43,6 +48,9 @@ from backend.schemas.reconciliation import (
     ExternalImportResponse,
     InvoiceUniquenessOut,
     InvoiceUniquenessResponse,
+    LinkDocumentRequest,
+    LinkResultOut,
+    ManualLinkOut,
     MatrixCellOut,
     ReconciliationDetailOut,
     ReconciliationListResponse,
@@ -117,6 +125,26 @@ def _payload_has_docs(data: dict) -> bool:
     return any(int(cell.get("count") or 0) > 0 for cell in data.get("matrix", []))
 
 
+def _report_out(row) -> ReconciliationReportOut:
+    """列表行 + 报告快照里的闭环摘要。
+
+    闭环只在 run 时算一次并写进 report_json；旧报告没重跑过就没有这段，
+    返回空值让前端显示「—」，而不是拿当前矩阵现算出一个和差异不一致的结论。
+    """
+    item = ReconciliationReportOut.model_validate(row)
+    try:
+        data = json.loads(row.report_json or "{}")
+    except ValueError:
+        data = {}
+    closure = data.get("closure") or {}
+    if closure:
+        item.closure_stage = str(closure.get("stage") or "")
+        item.closure_label = str(closure.get("stage_label") or "")
+        item.closure_percent = int(closure.get("percent") or 0)
+        item.closure_closed = bool(closure.get("closed"))
+    return item
+
+
 @router.post("/run", response_model=ReconciliationRunResponse)
 def run_reconciliation(payload: ReconciliationRunRequest, db: Session = Depends(get_db)):
     """执行对账。business_no 为空则跑全部业务线。"""
@@ -155,10 +183,7 @@ def list_reports(
     rows.sort(key=lambda r: (_STATUS_ORDER.get(r.status, 3), -r.id))
     total = len(rows)
     start = (page - 1) * page_size
-    items = [
-        ReconciliationReportOut.model_validate(row)
-        for row in rows[start:start + page_size]
-    ]
+    items = [_report_out(row) for row in rows[start:start + page_size]]
     return ReconciliationListResponse(total=total, items=items)
 
 
@@ -235,6 +260,7 @@ def get_report_detail(business_no: str, db: Session = Depends(get_db)):
         diffs=diffs,
         resolved_diffs=[ResolvedDiffOut(**d) for d in payload.get("resolved_diffs", [])],
         unlinked_document_ids=payload.get("unlinked_document_ids", []),
+        closure=payload.get("closure") or {},
     )
 
 
@@ -549,3 +575,147 @@ def clear_reconcile_changes():
 
     clear_changes()
     return {"changed_businesses": get_schedule().get("changed_businesses", [])}
+
+
+# ==================== 槽位人工挂载 ====================
+# 对账页每个格子（方向 × 角色）就是一个槽位。缺件的格子在这里直接挂单据：
+# 上传走 documents 的上传接口拿到 document_id，再调 /link 落归属，然后立刻重算该业务线。
+
+@router.post("/reports/{business_no}/link", response_model=LinkResultOut)
+def link_document(
+    business_no: str,
+    payload: LinkDocumentRequest,
+    recompute: bool = Query(default=True, description="是否立即重算该业务线；批量挂载时前几份可传 false"),
+    db: Session = Depends(get_db),
+):
+    """把单据挂到指定业务线的指定槽位，并立即重算该业务线。"""
+    svc = ReconciliationService(db)
+    try:
+        result = svc.link_document(
+            business_no=business_no,
+            document_id=payload.document_id,
+            direction=payload.direction,
+            role=payload.role,
+            note=payload.note,
+        )
+        if recompute:
+            svc.run(business_no=business_no)
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LinkResultOut(**result, message="已挂载并重新对账" if recompute else "已挂载")
+
+
+@router.delete("/reports/{business_no}/link/{document_id}", response_model=LinkResultOut)
+def unlink_document(
+    business_no: str,
+    document_id: int,
+    recompute: bool = Query(default=True, description="是否立即重算该业务线"),
+    db: Session = Depends(get_db),
+):
+    """取消关联。只删归属记录，文件本体不动、不进回收站。"""
+    svc = ReconciliationService(db)
+    try:
+        result = svc.unlink_document(business_no=business_no, document_id=document_id)
+        if recompute:
+            svc.run(business_no=business_no)
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return LinkResultOut(**result, message="已取消关联")
+
+
+@router.get("/reports/{business_no}/manual-links", response_model=list[ManualLinkOut])
+def list_manual_links(business_no: str, db: Session = Depends(get_db)):
+    """该业务线当前的全部人工归属记录。"""
+    return [ManualLinkOut(**row) for row in ReconciliationService(db).manual_links(business_no)]
+
+
+@router.get(
+    "/reports/{business_no}/cells/{direction}/{role}/documents",
+    response_model=CellDocumentsResponse,
+)
+def list_cell_documents(
+    business_no: str,
+    direction: str,
+    role: str,
+    db: Session = Depends(get_db),
+):
+    """槽位明细抽屉：列出该格里的每一张单据（1 对 N）。"""
+    try:
+        docs = ReconciliationService(db).cell_documents(
+            business_no=business_no, direction=direction, role=role
+        )
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    items = [CellDocumentOut(**d) for d in docs]
+    return CellDocumentsResponse(
+        business_no=business_no,
+        direction=direction,
+        role=role,
+        total=len(items),
+        documents=items,
+    )
+
+
+@router.get(
+    "/reports/{business_no}/cells/{direction}/{role}/candidates",
+    response_model=CellCandidatesResponse,
+)
+def list_cell_candidates(
+    business_no: str,
+    direction: str,
+    role: str,
+    source_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """槽位候选：库里类型对得上、但没判出归属的单据（「库中 N 份未归属」的可点清单）。"""
+    try:
+        docs = ReconciliationService(db).cell_candidates(
+            business_no=business_no, direction=direction, role=role, source_id=source_id
+        )
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    items = [CellCandidateOut(**d) for d in docs]
+    return CellCandidatesResponse(
+        business_no=business_no,
+        direction=direction,
+        role=role,
+        total=len(items),
+        documents=items,
+    )
+
+
+@router.get(
+    "/reports/{business_no}/cells/{direction}/{role}/check/{document_id}",
+    response_model=CellCheckOut,
+)
+def check_cell_document(
+    business_no: str,
+    direction: str,
+    role: str,
+    document_id: int,
+    source_id: Optional[int] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """槽位体检：这份单据放进这格对不对（类型/方向/对手方/发票号重复）。
+
+    只回建议，不落库；pending=True 表示识别还没跑完，前端先别弹提示。
+    """
+    try:
+        result = ReconciliationService(db).check_cell_document(
+            business_no=business_no,
+            direction=direction,
+            role=role,
+            document_id=document_id,
+            source_id=source_id,
+        )
+    except ReconciliationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return CellCheckOut(**result)
+
+
+@router.post("/archive-backfill")
+def archive_backfill(db: Session = Depends(get_db)):
+    """把对账矩阵里已归属的单据批量补进业务档案（只补没归集的，不动人工归属）。"""
+    from backend.services.recon_archive_bridge import backfill_from_reports
+
+    return backfill_from_reports(db)

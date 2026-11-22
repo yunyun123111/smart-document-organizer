@@ -69,6 +69,11 @@ class ReconciliationReportOut(BaseModel):
     status: str = "ok"
     diff_count: int = 0
     checked_at: Optional[datetime] = None
+    # 闭环快照（最后一次对账时算出的；未重跑过的旧报告为空）
+    closure_stage: str = ""
+    closure_label: str = ""
+    closure_percent: Optional[int] = None
+    closure_closed: bool = False
 
 
 class ReconciliationDetailOut(ReconciliationReportOut):
@@ -85,6 +90,8 @@ class ReconciliationDetailOut(ReconciliationReportOut):
     diffs: list[DiffOut] = Field(default_factory=list)
     resolved_diffs: list[ResolvedDiffOut] = Field(default_factory=list)
     unlinked_document_ids: list[int] = Field(default_factory=list)
+    # 闭环详情：stage / percent / sides（上下游各自要件）/ blockers / summary
+    closure: dict = Field(default_factory=dict)
 
 
 class ReconciliationListResponse(BaseModel):
@@ -278,3 +285,100 @@ class InvoiceUniquenessOut(BaseModel):
 class InvoiceUniquenessResponse(BaseModel):
     total: int = 0
     items: list[InvoiceUniquenessOut] = Field(default_factory=list)
+
+
+# ---------- 槽位人工挂载 ----------
+
+class LinkDocumentRequest(BaseModel):
+    """把一份单据挂到业务线的某个槽位。"""
+
+    document_id: int
+    # up / down / unknown
+    direction: str = "unknown"
+    # contract / settlement / invoice / cargo_right / payment_receipt
+    role: str = "other"
+    note: str = ""
+
+
+class LinkResultOut(BaseModel):
+    business_no: str
+    document_id: int
+    direction: str = ""
+    role: str = ""
+    removed: Optional[bool] = None
+    message: str = ""
+    # 同步归集到业务档案的结果：action=created/updated/exists/conflict/skip
+    archive: dict = Field(default_factory=dict)
+    # 取消关联时一并撤掉的对账补单档案关联数
+    archive_removed: int = 0
+
+
+class CellDocumentOut(BaseModel):
+    """槽位明细里的一行单据。"""
+
+    document_id: int
+    filename: str = ""
+    current_filename: str = ""
+    path: str = ""
+    status: str = ""
+    created_at: Optional[str] = None
+
+
+class CellDocumentsResponse(BaseModel):
+    business_no: str
+    direction: str
+    role: str
+    total: int = 0
+    documents: list[CellDocumentOut] = Field(default_factory=list)
+
+
+class ManualLinkOut(BaseModel):
+    document_id: int
+    direction: str = ""
+    role: str = ""
+    note: str = ""
+
+
+class CellCandidateOut(BaseModel):
+    """库里未归属、但类型与本槽位一致的一张候选单据。"""
+
+    document_id: int
+    filename: str = ""
+    document_type: str = ""
+    contract_no: str = ""
+    amount: Optional[float] = None
+    doc_date: str = ""
+    company: str = ""
+    reason: str = ""
+
+
+class CellCandidatesResponse(BaseModel):
+    business_no: str
+    direction: str
+    role: str
+    total: int = 0
+    documents: list[CellCandidateOut] = Field(default_factory=list)
+
+
+class CellCheckIssueOut(BaseModel):
+    """一条槽位体检提示。"""
+
+    code: str
+    severity: str = "warn"
+    message: str = ""
+    suggest_direction: Optional[str] = None
+    suggest_role: Optional[str] = None
+
+
+class CellCheckOut(BaseModel):
+    """单据放进某格前的体检结果。pending=True 表示还没识别完，先别提示。"""
+
+    business_no: str
+    document_id: int
+    filename: str = ""
+    status: str = ""
+    pending: bool = False
+    ok: bool = True
+    issues: list[CellCheckIssueOut] = Field(default_factory=list)
+    suggest_direction: Optional[str] = None
+    suggest_role: Optional[str] = None

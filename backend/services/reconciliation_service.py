@@ -50,6 +50,7 @@ from backend.models import (
     DocumentField,
     ExcelSource,
     ReconciliationReport,
+    ReconManualLink,
     SEVERITY_CRITICAL,
     SEVERITY_INFO,
     SEVERITY_WARNING,
@@ -57,6 +58,7 @@ from backend.models import (
 )
 from backend.services.doc_dedup import fingerprint as doc_fingerprint
 from backend.services.doc_dedup import is_same_image
+from backend.services.recon_closure import compute_closure
 from backend.utils.logger import get_logger
 
 logger = get_logger("services.reconciliation")
@@ -1578,7 +1580,26 @@ class ReconciliationService:
             raise ReconciliationError("尚未登记台账源，请先在「台账源」页上传台账 xlsx")
         return src
 
+    # ---- 人工归属 ----
+    def _load_manual_links(self, business_nos: set[str]) -> dict[int, dict[str, tuple[str, str]]]:
+        """document_id -> {business_no: (direction, role)}。"""
+        if not business_nos:
+            return {}
+        rows = self.db.execute(
+            select(
+                ReconManualLink.document_id,
+                ReconManualLink.business_no,
+                ReconManualLink.direction,
+                ReconManualLink.role,
+            ).where(ReconManualLink.business_no.in_(sorted(business_nos)))
+        ).all()
+        out: dict[int, dict[str, tuple[str, str]]] = {}
+        for document_id, business_no, direction, role in rows:
+            out.setdefault(document_id, {})[business_no] = (direction, role)
+        return out
+
     # ---- 文档归位 ----
+
     def _bind_documents(self, businesses: list[LedgerBusiness],
                         docs: list[DocRecord]) -> tuple[dict[str, list[DocRecord]], set[int],
                                                          list[DocRecord], dict[str, list[DocRecord]]]:
@@ -1606,7 +1627,24 @@ class ReconciliationService:
         # 单独用 statements 传下去，只做「已归属」说明，不参与任何金额统计。
         statements: dict[str, list[DocRecord]] = {}
         dup_ids: set[int] = set()
+        # 人工指定优先：有记录的单据不再参与任何推断（合同号 / 金额 / 对手方），
+        # 否则用户刚挂上的票下一轮会被推算结果挤回 pool，表现为"挂了又变缺件"。
+        manual_map = self._load_manual_links({b.business_no for b in businesses})
         for doc in docs:
+            manual = manual_map.get(doc.document_id)
+            if manual:
+                for business_no, (m_dir, m_role) in manual.items():
+                    if business_no not in bound:
+                        continue
+                    linked = DocRecord(**{**doc.__dict__})
+                    if m_dir in (DIRECTION_UP, DIRECTION_DOWN):
+                        linked.direction = m_dir
+                    if m_role:
+                        linked.role = m_role
+                        linked.file_role = m_role
+                    linked.assigned_by = "manual"
+                    bound[business_no].append(linked)
+                continue
             doc_variants = contract_variants(doc.contract_no)
             hits: set[str] = set()
             for variant in doc_variants:
@@ -1664,17 +1702,19 @@ class ReconciliationService:
         src = self.resolve_source(source_id)
         reader = LedgerReader(src.file_path)
         try:
-            businesses = reader.load()
+            all_businesses = reader.load()
         finally:
             reader.close()
-        if not businesses:
+        if not all_businesses:
             raise ReconciliationError("台账里没有读到有效业务线（检查「业务线」列是否有值）")
 
         if business_no:
             target = norm_no(business_no)
-            businesses = [b for b in businesses if b.business_no == target]
+            businesses = [b for b in all_businesses if b.business_no == target]
             if not businesses:
                 raise ReconciliationError(f"台账中不存在业务线：{business_no}")
+        else:
+            businesses = all_businesses
 
         # 上一轮快照：判断差异「新增 / 遗留 / 已解决」要用它，必须在 _upsert 覆盖之前读。
         prev_snapshots: dict[str, dict] = {}
@@ -1685,7 +1725,10 @@ class ReconciliationService:
                 prev_snapshots[row.business_no] = {}
 
         docs = _load_documents(self.db)
-        bound, dup_ids, pool, statements = self._bind_documents(businesses, docs)
+        # 归属推断一律基于「全量台账」，单条重算只决定重算哪一条的报告。
+        # 否则只拿这一条去比，「唯一命中」就会把同一客户别家业务线的单据
+        # 硬算到这条线上（表现为单条重算有资料、全量重算却是"未上传资料"）。
+        bound, dup_ids, pool, statements = self._bind_documents(all_businesses, docs)
 
         # 外部明细（P1）：只做参考口径展示，不参与判定
         from backend.services.external_detail_service import aggregate_by_business as _agg_external
@@ -1765,6 +1808,9 @@ class ReconciliationService:
                 "external_payment_total": ext.get("payment_total", "0.00"),
                 "external_detail_count": ext.get("count", 0),
                 "matrix": [m.__dict__ for m in matrix],
+                # 闭环判定：两侧各自「合同→结算→发票→资金凭证」齐套且金额平，
+                # 无欠款无余款才算闭环；缺件停在缺资料/执行中。
+                "closure": compute_closure(biz, matrix),
                 "diffs": [d.to_dict() for d in diffs],
                 "resolved_diffs": resolved,
                 "unlinked_document_ids": unlinked,
@@ -1920,3 +1966,385 @@ class ReconciliationService:
                 "reason": reason,
             })
         return out
+
+    # ---- 人工挂载：槽位上传闭环的落点 ----
+    def link_document(
+        self,
+        business_no: str,
+        document_id: int,
+        direction: str = DIRECTION_UNKNOWN,
+        role: str = "other",
+        note: str = "",
+    ) -> dict:
+        """把一份单据挂到某业务线的指定槽位；已存在则更新（幂等）。"""
+        if role not in RECON_ROLES:
+            raise ReconciliationError(f"槽位角色不合法：{role}")
+        if direction not in (DIRECTION_UP, DIRECTION_DOWN, DIRECTION_UNKNOWN):
+            raise ReconciliationError(f"槽位方向不合法：{direction}")
+        doc = self.db.get(Document, document_id)
+        if doc is None:
+            raise ReconciliationError(f"文档不存在：{document_id}")
+        row = self.db.execute(
+            select(ReconManualLink).where(
+                ReconManualLink.business_no == business_no,
+                ReconManualLink.document_id == document_id,
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = ReconManualLink(business_no=business_no, document_id=document_id)
+            self.db.add(row)
+        row.direction = direction
+        row.role = role
+        row.note = note or ""
+        self.db.commit()
+        # 双向打通：对账补单同步落进业务档案（档案按合同号收口，按方向挑合同）
+        archive: dict = {"ok": False, "action": "skip", "reason": "未归档"}
+        try:
+            from backend.services.recon_archive_bridge import archive_document
+
+            archive = archive_document(
+                self.db,
+                document_id,
+                business_no=business_no,
+                direction=direction,
+                role=role,
+                source="recon_link",
+            )
+        except Exception as exc:  # noqa: BLE001 - 归档是附加动作，不能把挂载本身搞失败
+            archive = {"ok": False, "action": "skip", "reason": f"归档异常：{exc}"}
+        return {
+            "business_no": business_no,
+            "document_id": document_id,
+            "direction": direction,
+            "role": role,
+            "archive": archive,
+        }
+
+    def unlink_document(self, business_no: str, document_id: int) -> dict:
+        """取消关联。只删归属记录，不动文件本体，也不进回收站。"""
+        row = self.db.execute(
+            select(ReconManualLink).where(
+                ReconManualLink.business_no == business_no,
+                ReconManualLink.document_id == document_id,
+            )
+        ).scalar_one_or_none()
+        removed = row is not None
+        direction = row.direction if row is not None else ""
+        role = row.role if row is not None else ""
+        if removed:
+            self.db.delete(row)
+            self.db.commit()
+        # 撤掉对账补单带进档案的关联（用户手工归集的保留）
+        archive_removed = 0
+        try:
+            from backend.services.recon_archive_bridge import unarchive_document
+
+            archive_removed = unarchive_document(self.db, document_id)
+        except Exception:  # noqa: BLE001 - 归档回撤失败不影响取消关联
+            archive_removed = 0
+        return {
+            "business_no": business_no,
+            "document_id": document_id,
+            "direction": direction,
+            "role": role,
+            "removed": removed,
+            "archive_removed": archive_removed,
+        }
+
+    def manual_links(self, business_no: str) -> list[dict]:
+        rows = (
+            self.db.execute(
+                select(ReconManualLink)
+                .where(ReconManualLink.business_no == business_no)
+                .order_by(ReconManualLink.id)
+            ).scalars().all()
+        )
+        return [
+            {
+                "document_id": r.document_id,
+                "direction": r.direction,
+                "role": r.role,
+                "note": r.note,
+            }
+            for r in rows
+        ]
+
+    def cell_documents(self, business_no: str, direction: str, role: str) -> list[dict]:
+        """槽位明细：该格里每张单据的基础信息，供前端抽屉展示。"""
+        report = self.db.execute(
+            select(ReconciliationReport).where(
+                ReconciliationReport.business_no == business_no
+            )
+        ).scalar_one_or_none()
+        if report is None:
+            raise ReconciliationError(f"尚未对账：{business_no}")
+        try:
+            payload = json.loads(report.report_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        cell = next(
+            (
+                m for m in (payload.get("matrix") or [])
+                if m.get("direction") == direction and m.get("role") == role
+            ),
+            None,
+        )
+        ids = list((cell or {}).get("document_ids") or [])
+        if not ids:
+            return []
+        docs = (
+            self.db.execute(select(Document).where(Document.id.in_(ids)).order_by(Document.id))
+            .scalars()
+            .all()
+        )
+        by_id = {d.id: d for d in docs}
+        out: list[dict] = []
+        for doc_id in ids:
+            d = by_id.get(doc_id)
+            if d is None:
+                continue
+            out.append({
+                "document_id": d.id,
+                "filename": d.original_filename,
+                "current_filename": d.current_filename,
+                "path": d.current_path,
+                "status": d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            })
+        return out
+
+    def cell_candidates(
+        self,
+        business_no: str,
+        direction: str,
+        role: str,
+        source_id: Optional[int] = None,
+    ) -> list[dict]:
+        """该槽位的候选单据：库里已认出是这一种单据，但判不出属于哪条业务线。
+
+        这些正是「库中 N 份未归属」的来源。用户点「挂到这格」后写一条人工归属，
+        下一次重算就进了本业务线的这个方向。
+        """
+        if role not in RECON_ROLES:
+            raise ReconciliationError(f"槽位角色不合法：{role}")
+        if direction not in (DIRECTION_UP, DIRECTION_DOWN, DIRECTION_UNKNOWN):
+            raise ReconciliationError(f"槽位方向不合法：{direction}")
+
+        src = self.resolve_source(source_id)
+        reader = LedgerReader(src.file_path)
+        try:
+            all_businesses = reader.load()
+        finally:
+            reader.close()
+        target = norm_no(business_no)
+        businesses = [b for b in all_businesses if b.business_no == target]
+        if not businesses:
+            raise ReconciliationError(f"台账中不存在业务线：{business_no}")
+
+        docs = _load_documents(self.db)
+        # 候选同样按全量台账推断：只拿本线去比会把别家单据判成"归属本线"，
+        # 候选里反而看不到真正未归属的那批。
+        _, _, pool, _ = self._bind_documents(all_businesses, docs)
+        manual = self._load_manual_links({target})
+        linked_ids = manual.get(target, {})
+
+        out: list[dict] = []
+        for d in pool:
+            if d.role != role or d.document_id in linked_ids:
+                continue
+            if not d.contract_no:
+                reason = "没有合同号，按金额和公司名也定不到唯一业务线"
+            else:
+                reason = f"合同号 {d.contract_no} 不属于任何业务线"
+            out.append({
+                "document_id": d.document_id,
+                "filename": d.filename,
+                "document_type": d.document_type,
+                "contract_no": d.contract_no,
+                "amount": float(d.amount) if d.amount is not None else None,
+                "doc_date": str(d.doc_date or ""),
+                "company": d.company or d.seller or "",
+                "reason": reason,
+            })
+        out.sort(key=lambda x: x["doc_date"] or "", reverse=True)
+        return out
+
+    # ---- 槽位体检：单据进某格之前，先看它对不对 ----
+
+    def _invoice_hits(self, invoice_no: str, exclude_document_id: int) -> list[dict]:
+        """同一个发票号已经落在哪些业务线的哪些格子里。"""
+        from backend.models import DocumentField
+
+        ids: list[int] = []
+        for doc_id, value in self.db.execute(
+            select(DocumentField.document_id, DocumentField.field_value)
+            .where(DocumentField.field_name == "invoice_no")
+        ).all():
+            if str(value or "").strip().upper() != invoice_no:
+                continue
+            if int(doc_id) != exclude_document_id:
+                ids.append(int(doc_id))
+        if not ids:
+            return []
+        hits: list[dict] = []
+        for rep in self.db.execute(select(ReconciliationReport)).scalars().all():
+            try:
+                payload = json.loads(rep.report_json or "{}")
+            except ValueError:
+                continue
+            for cell in payload.get("matrix") or []:
+                matched = [int(i) for i in (cell.get("document_ids") or []) if int(i) in set(ids)]
+                if matched:
+                    hits.append({
+                        "business_no": rep.business_no,
+                        "direction": cell.get("direction") or "",
+                        "role": cell.get("role") or "",
+                        "document_ids": matched,
+                    })
+        return hits
+
+    def check_cell_document(
+        self,
+        business_no: str,
+        direction: str,
+        role: str,
+        document_id: int,
+        source_id: Optional[int] = None,
+    ) -> dict:
+        """单据进槽位前的体检：角色、方向、对手方、发票号重复。
+
+        只给建议、不改归属：真正落库仍走 link_document。识别没跑完的单据返回
+        pending，前端不弹提示，避免拿半截数据去误导用户。
+        """
+        if role not in RECON_ROLES:
+            raise ReconciliationError(f"槽位角色不合法：{role}")
+        if direction not in (DIRECTION_UP, DIRECTION_DOWN, DIRECTION_UNKNOWN):
+            raise ReconciliationError(f"槽位方向不合法：{direction}")
+
+        row = self.db.get(Document, document_id)
+        if row is None:
+            raise ReconciliationError(f"文档不存在：{document_id}")
+
+        status = (row.status or "").strip().lower()
+        payload: dict = {
+            "business_no": business_no,
+            "document_id": document_id,
+            "filename": row.original_filename or row.current_filename or "",
+            "status": status,
+            "pending": False,
+            "ok": True,
+            "issues": [],
+            "suggest_direction": None,
+            "suggest_role": None,
+        }
+        if status in ("failed", "skipped", "recycled"):
+            payload["pending"] = True
+            return payload
+
+        # 「pending 但没有抽取结果」才是真没识别完；有字段说明只是状态没收尾，
+        # 这种单据该体检就体检（测试夹具和补跑识别的单据都长这样）。
+        from backend.models import DocumentField
+
+        field_count = self.db.execute(
+            select(DocumentField.id).where(DocumentField.document_id == document_id).limit(1)
+        ).first()
+        if status in ("", "pending", "processing", "duplicate") and field_count is None:
+            payload["pending"] = True
+            return payload
+
+        src = self.resolve_source(source_id)
+        reader = LedgerReader(src.file_path)
+        try:
+            businesses = reader.load()
+        finally:
+            reader.close()
+        target = norm_no(business_no)
+        biz = next((b for b in businesses if b.business_no == target), None)
+        if biz is None:
+            raise ReconciliationError(f"台账中不存在业务线：{business_no}")
+
+        rec = next((d for d in _load_documents(self.db) if d.document_id == document_id), None)
+        if rec is None:
+            payload["pending"] = True
+            return payload
+
+        issues: list[dict] = []
+        suggest_direction: Optional[str] = None
+        suggest_role: Optional[str] = None
+
+        def add_issue(code: str, severity: str, message: str,
+                      dir_hint: Optional[str] = None, role_hint: Optional[str] = None) -> None:
+            nonlocal suggest_direction, suggest_role
+            issues.append({
+                "code": code,
+                "severity": severity,
+                "message": message,
+                "suggest_direction": dir_hint,
+                "suggest_role": role_hint,
+            })
+            if dir_hint:
+                suggest_direction = dir_hint
+            if role_hint:
+                suggest_role = role_hint
+
+        # 1) 单据种类 —— 「拖错槽」最主要的一类
+        actual_role = infer_role(rec.file_role, rec.document_type, rec.filename)
+        if actual_role != "other" and actual_role != role:
+            add_issue(
+                "role_mismatch", "error",
+                f"这份单据更像「{ROLE_LABELS.get(actual_role, actual_role)}」，"
+                f"不是「{ROLE_LABELS.get(role, role)}」",
+                role_hint=actual_role,
+            )
+
+        # 2) 上下游 —— 合同号优先，其次台账金额锚点/对手方
+        actual_dir = infer_direction(rec.file_role, rec.contract_no)
+        basis = "合同号"
+        if actual_dir == DIRECTION_UNKNOWN:
+            actual_dir, why = _assign_single(rec, biz)
+            if why.startswith("amount"):
+                basis = f"台账里的{why.split(':', 1)[-1]}"
+            elif why.startswith("party"):
+                basis = "对手方公司名"
+        if actual_dir in (DIRECTION_UP, DIRECTION_DOWN) and actual_dir != direction:
+            label = "上游（供应商侧）" if actual_dir == DIRECTION_UP else "下游（客户侧）"
+            add_issue(
+                "direction_mismatch", "error",
+                f"按{basis}看，这份单据属于{label}，放错方向了",
+                dir_hint=actual_dir,
+            )
+
+        # 3) 对手方 —— 单据上的公司不在本业务线的供应商/采购商里
+        if biz.supplier or biz.customer:
+            names = [n for n in (rec.seller, rec.company) if n]
+            known = [k for k in (biz.supplier, biz.customer) if k]
+            if names and known and not any(_name_match(n, k) for n in names for k in known):
+                add_issue(
+                    "party_unknown", "warn",
+                    f"单据上的公司「{names[0]}」不是这条业务线的供应商/采购商"
+                    f"（{biz.supplier or '未知'} / {biz.customer or '未知'}），确认是不是挂错业务线了",
+                )
+
+        # 4) 发票号 —— 同一张票不能同时进两条业务线
+        inv = (rec.invoice_no or "").strip().upper()
+        if inv and len(inv) >= 6:
+            hits = self._invoice_hits(inv, exclude_document_id=document_id)
+            other_biz = sorted({h["business_no"] for h in hits if h["business_no"] != target})
+            same_biz = [h for h in hits if h["business_no"] == target
+                        and not (h["direction"] == direction and h["role"] == role)]
+            if other_biz:
+                add_issue(
+                    "invoice_duplicated_elsewhere", "warn",
+                    f"发票号 {inv} 已经在业务线 {'、'.join(other_biz)} 上归档，同一张票不该挂两条线",
+                )
+            if same_biz:
+                add_issue(
+                    "invoice_duplicated_same_business", "warn",
+                    f"发票号 {inv} 在本业务线的另一格已经挂过了，可能重复",
+                )
+
+        payload["issues"] = issues
+        payload["ok"] = not any(i["severity"] == "error" for i in issues)
+        payload["suggest_direction"] = suggest_direction
+        payload["suggest_role"] = suggest_role
+        return payload

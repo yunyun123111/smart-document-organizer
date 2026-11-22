@@ -60,6 +60,8 @@ class BusinessRecordListResponse(BaseModel):
 class BusinessRecordDetailResponse(BaseModel):
     ok: bool = True
     data: BusinessRecordOut
+    # 本次操作顺带重算了对账的业务线（档案归集 → 对账自动挂上）
+    recomputed: list[str] = []
 
 
 class BusinessRecordCreate(BaseModel):

@@ -47,3 +47,25 @@ def test_relocate_unmatched(tmp_path, db):
 def test_relocate_no_missing(db):
     res = relocate(db)
     assert res["total"] == 0
+
+
+def test_relocate_matches_disk_basename(tmp_path, db):
+    """迁移后 current_filename 为空、原名也对不上时，用旧路径的文件名兜底匹配。"""
+    disk_name = "1f71d892-inbox.pdf"
+    d = Document(
+        original_filename="scan.pdf", current_filename="",
+        original_path=str(tmp_path / "old" / disk_name),
+        current_path=str(tmp_path / "old" / disk_name),
+        file_hash="hash_x", document_type="发票",
+    )
+    db.add(d)
+    db.commit()
+
+    moved = tmp_path / "inbox" / disk_name
+    moved.parent.mkdir()
+    moved.write_bytes(b"content")
+
+    res = relocate(db, search_roots=[str(tmp_path / "inbox")])
+    assert res["relinked"] == 1
+    db.refresh(d)
+    assert d.current_path == str(moved)

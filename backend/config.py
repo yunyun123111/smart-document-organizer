@@ -15,6 +15,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _resolve_dir(raw: str) -> Path:
+    """把配置里的目录解析成绝对路径。
+
+    .env 模板默认写 ./data/documents 这种相对路径，一旦工作目录变了（计划任务、
+    双击 bat、注册表自启），相对路径就会指向别处，表现为"文档全部不识别"。
+    统一按项目根解析，保证任何启动方式下路径都稳定。
+    """
+    p = Path(str(raw)).expanduser()
+    if p.is_absolute():
+        return p
+    return (BASE_DIR / p).resolve()
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
@@ -113,23 +126,23 @@ class Settings(BaseSettings):
     # ---- 派生属性 ----
     @property
     def document_root(self) -> Path:
-        return Path(self.DOCUMENT_ROOT)
+        return _resolve_dir(self.DOCUMENT_ROOT)
 
     @property
     def inbox_root(self) -> Path:
-        return Path(self.INBOX_ROOT)
+        return _resolve_dir(self.INBOX_ROOT)
 
     @property
     def temp_dir(self) -> Path:
-        return Path(self.TEMP_DIR)
+        return _resolve_dir(self.TEMP_DIR)
 
     @property
     def recycle_bin_root(self) -> Path:
-        return Path(self.RECYCLE_BIN_ROOT)
+        return _resolve_dir(self.RECYCLE_BIN_ROOT)
 
     @property
     def excel_sources_root(self) -> Path:
-        return Path(self.EXCEL_SOURCES_ROOT)
+        return _resolve_dir(self.EXCEL_SOURCES_ROOT)
 
     @property
     def watch_dirs(self) -> list[Path]:
@@ -150,7 +163,7 @@ class Settings(BaseSettings):
 
     @property
     def log_dir(self) -> Path:
-        return Path(self.LOG_DIR)
+        return _resolve_dir(self.LOG_DIR)
 
     def ensure_dirs(self) -> None:
         """确保所有运行所需目录存在（支持 Windows 长路径）。"""

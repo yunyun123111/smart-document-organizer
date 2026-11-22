@@ -137,6 +137,12 @@ from backend.models.rule_candidate import (
     KIND_FILENAME_PREFIX,
     RuleCandidate,
 )
+from backend.models.recon_manual_link import (
+    MANUAL_DIRECTION_DOWN,
+    MANUAL_DIRECTION_UNKNOWN,
+    MANUAL_DIRECTION_UP,
+    ReconManualLink,
+)
 
 __all__ = [
     "Base",
@@ -263,4 +269,8 @@ __all__ = [
     "CANDIDATE_ADOPTED",
     "CANDIDATE_REJECTED",
     "KIND_FILENAME_PREFIX",
+    "ReconManualLink",
+    "MANUAL_DIRECTION_UP",
+    "MANUAL_DIRECTION_DOWN",
+    "MANUAL_DIRECTION_UNKNOWN",
 ]

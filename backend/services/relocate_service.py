@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from backend.config import settings
+from backend.config import BASE_DIR, settings
 from backend.models import Document
 from backend.utils.hash_utils import sha256_file
 from backend.utils.logger import get_logger
@@ -25,13 +25,16 @@ def missing_documents(db) -> list[dict]:
         .all()
     )
     for doc_id, original, current, path in rows:
-        p = Path(path or "")
-        if not p.exists():
+        raw = Path(path or "")
+        # 相对路径一律视为失效：历史版本重定位曾写入 ./data/... 相对路径，
+        # 换一个工作目录启动就找不到文件，必须重新解析成绝对路径。
+        abs_p = raw if raw.is_absolute() else (BASE_DIR / raw)
+        if (not raw.is_absolute()) or (not abs_p.exists()):
             out.append({
                 "id": doc_id,
                 "original_filename": original,
                 "current_filename": current,
-                "path": str(p),
+                "path": str(abs_p),
             })
     return out
 
@@ -68,9 +71,15 @@ def relocate(
     if not missing:
         return {"relinked": 0, "failed": 0, "total": 0, "matched": [], "unmatched": []}
 
-    roots: list[Path] = [settings.document_root]
+    roots: list[Path] = []
+    # 默认同时搜索归档目录与收件箱：迁移到新机器后，未归档文档仍留在 inbox
+    for default_root in (settings.document_root, settings.inbox_root):
+        if default_root not in roots:
+            roots.append(default_root)
     for r in search_roots or []:
         rp = Path(r)
+        if not rp.is_absolute():
+            rp = (BASE_DIR / rp)
         if rp.is_dir():
             roots.append(rp)
         else:
@@ -92,11 +101,14 @@ def relocate(
         if not doc:
             unmatched.append(m)
             continue
-        # 候选：当前文件名 -> 原始文件名
+        # 候选：当前文件名 -> 原始文件名 -> 原路径的文件名（迁移/改名后仍保留 disk 名）
         candidates: list[Path] = []
-        for name in (m["current_filename"], m["original_filename"]):
+        for name in (m["current_filename"], m["original_filename"], Path(m["path"]).name):
+            if not name:
+                continue
             for p in index.get(name, []):
-                candidates.append(p)
+                if p not in candidates:
+                    candidates.append(p)
         chosen: Path | None = None
         if by_hash and candidates:
             target_hash = doc.file_hash

@@ -277,8 +277,19 @@ def add_file_to_business(
     record = _get_or_404(db, business_id)
     out = _to_record_out(record, file_count=_file_count(db, business_id))
     out.files = _load_file_outs(db, business_id)
+
+    # 档案侧归集完成后，把该合同所属业务线的对账重算一遍：
+    # 归档时写入的 file_role/合同号会被对账读走，重算后自动出现在矩阵里
+    recomputed: list[str] = []
+    try:
+        from backend.services.recon_archive_bridge import recompute_for_contract
+
+        recomputed = recompute_for_contract(db, record.business_no)
+    except Exception as exc:  # noqa: BLE001 - 重算是附加动作，不影响归集结果
+        logger.warning("档案归集后重算对账失败 business_id=%s: %s", business_id, exc)
+
     logger.info("挂载文档到档案: business_id=%s document_id=%s role=%s", business_id, payload.document_id, file_role)
-    return BusinessRecordDetailResponse(data=out)
+    return BusinessRecordDetailResponse(data=out, recomputed=recomputed)
 
 
 @router.delete("/{business_id}/files/{document_id}")
@@ -320,7 +331,18 @@ def dissolve_business_archive(business_id: int, db: Session = Depends(get_db)):
 
 @router.post("/backfill", response_model=BackfillResponse)
 def backfill_business_archives(db: Session = Depends(get_db)):
-    """扫描历史文档，批量建立业务档案并自动归集。"""
+    """扫描历史文档，批量建立业务档案并自动归集。
+
+    第二段把对账矩阵里已确认归属、但档案侧还没有的单据补进来：档案与对账
+    是同一批文件的两套归属，历史数据不能只补一边。
+    """
     stats = _service.backfill_historical_data(db)
+    try:
+        from backend.services.recon_archive_bridge import backfill_from_reports
+
+        stats["from_reconciliation"] = backfill_from_reports(db)
+    except Exception as exc:  # noqa: BLE001 - 对账侧回填失败不推翻档案回填结果
+        logger.warning("对账矩阵回填档案失败: %s", exc)
+        stats["from_reconciliation"] = {"error": str(exc)}
     logger.info("历史数据回填完成: %s", stats)
     return BackfillResponse(stats=stats)
