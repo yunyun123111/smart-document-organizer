@@ -54,6 +54,49 @@ export interface ReconciliationMatrixCell {
   candidate_count: number
 }
 
+// ---------- 业务闭环 ----------
+
+export interface ClosureRequirement {
+  role: string
+  label: string
+  count: number
+  have: boolean
+  amount: number | null
+  target: number | null
+  target_label: string
+  // null = 口径缺失或合同不比金额；false = 金额不平
+  amount_ok: boolean | null
+  ok: boolean
+}
+
+export interface ClosureSide {
+  direction: 'up' | 'down' | string
+  label: string
+  applicable: boolean
+  closed: boolean
+  stage: string
+  stage_label: string
+  percent: number
+  docs_ok: boolean
+  amount_ok: boolean
+  requirements: ClosureRequirement[]
+  optional: Record<string, number>
+  blockers: string[]
+  notes: string[]
+}
+
+export interface BusinessClosure {
+  stage: string
+  stage_label: string
+  closed: boolean
+  percent: number
+  requirements_total: number
+  requirements_done: number
+  sides: Record<string, ClosureSide>
+  blockers: string[]
+  summary: string
+}
+
 export interface ReconciliationReport {
   id: number
   business_no: string
@@ -67,6 +110,11 @@ export interface ReconciliationReport {
   status: 'ok' | 'warning' | 'error' | 'no_data' | string
   diff_count: number
   checked_at: string | null
+  // 闭环快照（旧报告未重跑时为空）
+  closure_stage?: string
+  closure_label?: string
+  closure_percent?: number | null
+  closure_closed?: boolean
 }
 
 export interface ReconciliationDetail extends ReconciliationReport {
@@ -81,6 +129,7 @@ export interface ReconciliationDetail extends ReconciliationReport {
   diffs: ReconciliationDiff[]
   resolved_diffs: ResolvedDiff[]
   unlinked_document_ids: number[]
+  closure?: BusinessClosure
 }
 
 export interface ReconciliationList {
@@ -308,4 +357,138 @@ export function clearReconcileChanges(): Promise<{ changed_businesses: string[] 
 
 export function listInvoiceUniqueness(): Promise<{ total: number; items: InvoiceUniquenessItem[] }> {
   return http.get('/reconciliation/invoice-uniqueness')
+}
+
+// ---------- 槽位人工挂载（缺口驱动补单） ----------
+
+/** 补单同步归集到业务档案的结果。 */
+export interface LinkArchiveResult {
+  ok: boolean
+  /** created / updated / exists / conflict / skip */
+  action: string
+  contract_no?: string
+  business_id?: number
+  created_record?: boolean
+  reason?: string
+}
+
+export interface LinkResult {
+  business_no: string
+  document_id: number
+  direction: string
+  role: string
+  removed?: boolean | null
+  message: string
+  archive?: LinkArchiveResult
+}
+
+export interface CellDocument {
+  document_id: number
+  filename: string
+  current_filename: string
+  path: string
+  status: string
+  created_at: string | null
+}
+
+export interface CellDocumentList {
+  business_no: string
+  direction: string
+  role: string
+  total: number
+  documents: CellDocument[]
+}
+
+export interface CellCandidate {
+  document_id: number
+  filename: string
+  document_type: string
+  contract_no: string
+  amount: number | null
+  doc_date: string
+  company: string
+  reason: string
+}
+
+export interface CellCandidateList {
+  business_no: string
+  direction: string
+  role: string
+  total: number
+  documents: CellCandidate[]
+}
+
+export function linkReconDocument(
+  businessNo: string,
+  data: { document_id: number; direction?: string; role?: string; note?: string },
+  recompute = true,
+): Promise<LinkResult> {
+  return http.post(`/reconciliation/reports/${encodeURIComponent(businessNo)}/link`, data, {
+    params: { recompute },
+  })
+}
+
+/** 库里类型对得上、但没判出归属的单据（格子上的「库中 N 份待归位」）。 */
+export function listCellCandidates(
+  businessNo: string,
+  direction: string,
+  role: string,
+): Promise<CellCandidateList> {
+  return http.get(
+    `/reconciliation/reports/${encodeURIComponent(businessNo)}/cells/${encodeURIComponent(direction)}/${encodeURIComponent(role)}/candidates`,
+  )
+}
+
+export function unlinkReconDocument(
+  businessNo: string,
+  documentId: number,
+  recompute = true,
+): Promise<LinkResult> {
+  return http.delete(
+    `/reconciliation/reports/${encodeURIComponent(businessNo)}/link/${documentId}`,
+    { params: { recompute } },
+  )
+}
+
+export function listCellDocuments(
+  businessNo: string,
+  direction: string,
+  role: string,
+): Promise<CellDocumentList> {
+  return http.get(
+    `/reconciliation/reports/${encodeURIComponent(businessNo)}/cells/${encodeURIComponent(direction)}/${encodeURIComponent(role)}/documents`,
+  )
+}
+
+export interface CellCheckIssue {
+  code: string
+  severity: 'error' | 'warn' | string
+  message: string
+  suggest_direction: string | null
+  suggest_role: string | null
+}
+
+export interface CellCheckResult {
+  business_no: string
+  document_id: number
+  filename: string
+  status: string
+  /** 识别还没跑完，此时不该弹任何提示 */
+  pending: boolean
+  ok: boolean
+  issues: CellCheckIssue[]
+  suggest_direction: string | null
+  suggest_role: string | null
+}
+
+/** 单据进槽位前的体检：类型/方向/对手方/发票号重复。只给建议，不改归属。 */
+export function checkCellDocument(
+  businessNo: string,
+  direction: string,
+  role: string,
+  documentId: number,
+): Promise<CellCheckResult> {
+  return http.get(
+    `/reconciliation/reports/${encodeURIComponent(businessNo)}/cells/${encodeURIComponent(direction)}/${encodeURIComponent(role)}/check/${documentId}`,
+  )
 }

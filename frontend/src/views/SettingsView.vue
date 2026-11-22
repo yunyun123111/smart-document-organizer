@@ -781,7 +781,7 @@ onMounted(() => { load(); loadExcelSources() })
           </el-tag>
         </el-form-item>
         <el-form-item label="搜索目录（可选）">
-          <el-input v-model="relocateSearchRoot" placeholder="文件移动到的文件夹；留空则仅扫描系统文档根目录" />
+          <el-input v-model="relocateSearchRoot" placeholder="文件移动到的文件夹；留空则扫描系统文档目录和收件箱" />
           <div class="gray small">例如把「data\documents」整体移到了 D:\我的归档，就填 D:\我的归档</div>
         </el-form-item>
         <el-form-item label="操作">

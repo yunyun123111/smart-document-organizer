@@ -8,13 +8,18 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useMobile } from '@/composables/useMobile'
+import { startProcessing, uploadDocument } from '@/api'
 import {
   clearReconcileChanges,
   deleteExternalBatch,
   exportReconciliation,
   getReconcileSchedule,
   getReconciliationDetail,
+  checkCellDocument,
   importExternalDetails,
+  linkReconDocument,
+  listCellCandidates,
+  listCellDocuments,
   listExternalBatches,
   listExternalDetails,
   listInvoiceUniqueness,
@@ -23,8 +28,12 @@ import {
   resolveReconciliationDiff,
   runReconciliation,
   summaryByGroup,
+  unlinkReconDocument,
   updateReconcileSchedule,
   urgeReconciliationBusiness,
+  type CellCandidate,
+  type CellCheckResult,
+  type CellDocument,
   type DiffResolutionType,
   type ExternalBatch,
   type ExternalDetail,
@@ -84,6 +93,19 @@ const statusMeta: Record<string, { label: string; type: 'success' | 'warning' | 
   warning: { label: '有警告', type: 'warning' },
   error: { label: '有错误', type: 'danger' },
   no_data: { label: '未上传资料', type: 'info' },
+}
+
+// 闭环阶段 → 标签颜色。资料没齐是灰的，金额不平是黄的，闭环才是绿的。
+const closureMeta: Record<string, { type: 'success' | 'warning' | 'danger' | 'info' }> = {
+  closed: { type: 'success' },
+  unbalanced: { type: 'warning' },
+  partial: { type: 'warning' },
+  collecting: { type: 'info' },
+  not_started: { type: 'info' },
+}
+
+function closureType(stage?: string): 'success' | 'warning' | 'danger' | 'info' {
+  return closureMeta[stage || '']?.type || 'info'
 }
 
 const roleLabels: Record<string, string> = {
@@ -175,6 +197,317 @@ function resolutionType(v?: string) {
 
 function cellOf(matrix: ReconciliationMatrixCell[] | undefined, direction: string, role: string) {
   return matrix?.find((c) => c.direction === direction && c.role === role)
+}
+
+// ---------------- 槽位补单：缺口驱动上传 ----------------
+// 缺什么就在哪个格子上传：上传 → 落人工归属 → 重算，金额由识别出的单据金额自动累加。
+const cellFileInput = ref<HTMLInputElement | null>(null)
+const cellTarget = ref<{ direction: string; role: string } | null>(null)
+const cellUploading = ref(false)
+const cellDragOver = ref('')
+
+const cellDrawer = ref(false)
+const cellDrawerLoading = ref(false)
+const cellDrawerCell = ref<{ direction: string; role: string } | null>(null)
+const cellDocs = ref<CellDocument[]>([])
+
+const cellDrawerTitle = computed(() => {
+  const c = cellDrawerCell.value
+  if (!c) return '槽位明细'
+  return `${directionLabels[c.direction] || c.direction} · ${roleLabels[c.role] || c.role}`
+})
+
+function pickCellFile(direction: string, role: string) {
+  if (cellUploading.value) return
+  cellTarget.value = { direction, role }
+  const input = cellFileInput.value
+  if (input) {
+    input.value = ''
+    input.click()
+  }
+}
+
+async function onCellFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !cellTarget.value) return
+  const { direction, role } = cellTarget.value
+  await uploadToCell(file, direction, role)
+}
+
+function onCellDragOver(direction: string, role: string) {
+  cellDragOver.value = `${direction}:${role}`
+}
+
+function isDraggingCell(direction: string, role: string) {
+  return cellDragOver.value === `${direction}:${role}`
+}
+
+function onCellDrop(e: DragEvent, direction: string, role: string) {
+  cellDragOver.value = ''
+  const file = e.dataTransfer?.files?.[0]
+  if (file) void uploadToCell(file, direction, role)
+}
+
+/**
+ * 单据进槽位前的体检：方向和角色对不上的，先问一句再落归属。
+ * 识别没跑完（pending）或体检接口本身失败时，按原槽位走，不耽误用户。
+ */
+async function resolveSlotTarget(
+  businessNo: string,
+  documentId: number,
+  direction: string,
+  role: string,
+): Promise<{ direction: string; role: string; moved: boolean }> {
+  let chk: CellCheckResult | null = null
+  try {
+    chk = await checkCellDocument(businessNo, direction, role, documentId)
+  } catch {
+    return { direction, role, moved: false }
+  }
+  if (!chk || chk.pending || !chk.issues.length) return { direction, role, moved: false }
+
+  const lines = chk.issues.map((i) => `· ${i.message}`).join('\n')
+  const hasError = chk.issues.some((i) => i.severity === 'error')
+  if (hasError && (chk.suggest_direction || chk.suggest_role)) {
+    const dir = chk.suggest_direction || direction
+    const rl = chk.suggest_role || role
+    const label = `${directionLabels[dir] || dir} · ${roleLabels[rl] || rl}`
+    try {
+      await ElMessageBox.confirm(`${lines}\n\n要不要改到【${label}】？`, '这个槽位可能不对', {
+        type: 'warning',
+        confirmButtonText: '改过去',
+        cancelButtonText: '仍留在这里',
+      })
+      return { direction: dir, role: rl, moved: true }
+    } catch {
+      return { direction, role, moved: false }
+    }
+  }
+  // 只有警告（比如公司名对不上、发票号已在别的线）：提示一下，照挂
+  ElMessage.warning(lines)
+  return { direction, role, moved: false }
+}
+
+async function uploadToCell(file: File, direction: string, role: string) {
+  if (!detail.value || cellUploading.value) return
+  const businessNo = detail.value.business_no
+  cellUploading.value = true
+  try {
+    const up = await uploadDocument(file)
+    const target = await resolveSlotTarget(businessNo, up.document_id, direction, role)
+    const linkRes = await linkReconDocument(businessNo, {
+      document_id: up.document_id,
+      direction: target.direction,
+      role: target.role,
+      note: target.moved ? `对账槽位补单（由${roleLabels[role]}转存）` : '对账槽位补单',
+    })
+    const archive = linkRes?.archive
+    const archiveNote =
+      archive && archive.ok && archive.contract_no &&
+      (archive.action === 'created' || archive.action === 'updated')
+        ? `，已归集档案 ${archive.contract_no}`
+        : ''
+    if (up.status === 'duplicate') {
+      ElMessage.info(
+        `库里已有同一份文件（${up.duplicate_of || file.name}），已直接挂到该槽位${archiveNote}`,
+      )
+    } else {
+      const conflictNote =
+        archive && !archive.ok && archive.action === 'conflict' ? '（档案里已人工归到别的合同，未搬动）' : ''
+      ElMessage.success(`已上传并挂到该槽位${archiveNote}${conflictNote}，正在识别归档`)
+      try {
+        await startProcessing()
+      } catch {
+        // 已有整理任务在跑：识别结果稍后回填，不影响本次归属
+      }
+    }
+    await refreshDetail(businessNo)
+    if (cellDrawer.value) await loadCellDocs()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || err?.message || '上传失败')
+  } finally {
+    cellUploading.value = false
+    cellTarget.value = null
+  }
+}
+
+async function refreshDetail(businessNo: string) {
+  detailLoading.value = true
+  try {
+    detail.value = await getReconciliationDetail(businessNo)
+  } catch {
+    /* 保留旧数据，避免抽屉闪空 */
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+async function openCellDrawer(direction: string, role: string) {
+  cellDrawerCell.value = { direction, role }
+  cellDrawer.value = true
+  await loadCellDocs()
+}
+
+async function loadCellDocs() {
+  if (!detail.value || !cellDrawerCell.value) return
+  cellDrawerLoading.value = true
+  try {
+    const res = await listCellDocuments(
+      detail.value.business_no,
+      cellDrawerCell.value.direction,
+      cellDrawerCell.value.role,
+    )
+    cellDocs.value = res.documents
+  } catch {
+    cellDocs.value = []
+  } finally {
+    cellDrawerLoading.value = false
+  }
+}
+
+async function removeCellDoc(doc: CellDocument) {
+  if (!detail.value || !cellDrawerCell.value) return
+  const businessNo = detail.value.business_no
+  const cell = { ...cellDrawerCell.value }
+  const before = cellOf(detail.value.matrix, cell.direction, cell.role)?.count || 0
+  try {
+    await ElMessageBox.confirm(
+      `取消《${doc.current_filename || doc.filename}》与这个槽位的关联？文件本身不会删除。`,
+      '取消关联',
+      { type: 'warning', confirmButtonText: '取消关联', cancelButtonText: '保留' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await unlinkReconDocument(businessNo, doc.document_id)
+    await refreshDetail(businessNo)
+    await loadCellDocs()
+    const after = cellOf(detail.value?.matrix, cell.direction, cell.role)?.count || 0
+    if (after >= before) {
+      ElMessage.warning('该单据是系统按合同号自动归集的，人工取消不生效；请到文档库改合同号或归属')
+    } else {
+      ElMessage.success('已取消关联')
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '取消失败')
+  }
+}
+
+// ---------------- 未归属候选：把库里认得类型但定不到线的单据挂到本槽位 ----------------
+const candDialog = ref(false)
+const candLoading = ref(false)
+const candLinking = ref(false)
+const candCell = ref<{ direction: string; role: string } | null>(null)
+const candDocs = ref<CellCandidate[]>([])
+
+const candTitle = computed(() => {
+  const c = candCell.value
+  if (!c) return '库中未归属单据'
+  return `${directionLabels[c.direction] || c.direction} · ${roleLabels[c.role] || c.role} · 未归属单据`
+})
+
+const candTotalAmount = computed(() =>
+  candDocs.value.reduce((sum, d) => sum + (Number(d.amount) || 0), 0),
+)
+
+async function openCandidates(direction: string, role: string) {
+  if (!detail.value) return
+  candCell.value = { direction, role }
+  candDialog.value = true
+  candLoading.value = true
+  try {
+    const res = await listCellCandidates(detail.value.business_no, direction, role)
+    candDocs.value = res.documents
+  } catch {
+    candDocs.value = []
+  } finally {
+    candLoading.value = false
+  }
+}
+
+/** 差异行上的补单：库里有疑似单据就先弹候选，没有才让人选文件。 */
+function supplementDiff(diff: ReconciliationDiff) {
+  if (!diff.direction || !diff.role || diff.role === 'other') return
+  const cell = cellOf(detail.value?.matrix, diff.direction, diff.role)
+  if (cell?.candidate_count) {
+    openCandidates(diff.direction, diff.role)
+    return
+  }
+  pickCellFile(diff.direction, diff.role)
+}
+
+async function linkCandidate(doc: CellCandidate) {
+  if (!detail.value || !candCell.value || candLinking.value) return
+  const businessNo = detail.value.business_no
+  const cell = { ...candCell.value }
+  let direction = cell.direction
+  let role = cell.role
+  let moved = false
+  candLinking.value = true
+  try {
+    // 体检走的是"有没有更合适的槽位"，失败不阻断挂载
+    const target = await resolveSlotTarget(businessNo, doc.document_id, direction, role)
+    direction = target.direction
+    role = target.role
+    moved = target.moved
+    const linkRes = await linkReconDocument(businessNo, {
+      document_id: doc.document_id,
+      direction,
+      role,
+      note: moved ? `从未归属清单挂载（由${roleLabels[cell.role]}转存）` : '从未归属清单挂载',
+    })
+    const archive = linkRes?.archive
+    const archNote =
+      archive && archive.ok && archive.contract_no &&
+      (archive.action === 'created' || archive.action === 'updated')
+        ? `，已归集档案 ${archive.contract_no}`
+        : ''
+    ElMessage.success(`已挂到${roleLabels[role]}${archNote}`)
+    candDocs.value = candDocs.value.filter((d) => d.document_id !== doc.document_id)
+    await refreshDetail(businessNo)
+    if (cellDrawer.value) await loadCellDocs()
+    if (!candDocs.value.length) candDialog.value = false
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '挂载失败')
+  } finally {
+    candLinking.value = false
+  }
+}
+
+async function linkAllCandidates() {
+  if (!detail.value || !candCell.value || !candDocs.value.length || candLinking.value) return
+  const businessNo = detail.value.business_no
+  const cell = { ...candCell.value }
+  const ids = candDocs.value.map((d) => d.document_id)
+  candLinking.value = true
+  try {
+    // 前面几份只落归属，最后一份触发一次重算，避免 N 次全量重算
+    const archived = new Set<string>()
+    for (let i = 0; i < ids.length; i += 1) {
+      const res = await linkReconDocument(
+        businessNo,
+        { document_id: ids[i], direction: cell.direction, role: cell.role, note: '批量挂载未归属单据' },
+        i === ids.length - 1,
+      )
+      const a = res?.archive
+      if (a?.ok && a.contract_no && (a.action === 'created' || a.action === 'updated')) {
+        archived.add(a.contract_no)
+      }
+    }
+    const extra = archived.size ? `，归集到档案 ${[...archived].join('、')}` : ''
+    ElMessage.success(`已挂载 ${ids.length} 份单据并重新对账${extra}`)
+    candDocs.value = []
+    candDialog.value = false
+    await refreshDetail(businessNo)
+    if (cellDrawer.value) await loadCellDocs()
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '批量挂载失败')
+  } finally {
+    candLinking.value = false
+  }
 }
 
 // ---------------- 加载 ----------------
@@ -271,6 +604,13 @@ async function openDetail(row: ReconciliationReport) {
   detailLoading.value = true
   detail.value = null
   try {
+    // 报告是快照：打开时先把这条重算一遍，避免对着过期的「缺件」去补根本不缺的单。
+    // 单条重算在毫秒到 1 秒级，失败就退回旧报告，不挡打开。
+    try {
+      await runReconciliation({ business_no: row.business_no })
+    } catch {
+      /* 重算失败沿用旧报告 */
+    }
     detail.value = await getReconciliationDetail(row.business_no)
   } finally {
     detailLoading.value = false
@@ -623,6 +963,15 @@ onMounted(async () => {
                 <span v-else>{{ row.diff_count }}</span>
               </template>
             </el-table-column>
+            <el-table-column label="闭环" width="120" align="center">
+              <template #default="{ row }">
+                <span v-if="!row.closure_stage" class="muted">—</span>
+                <template v-else>
+                  <el-tag :type="closureType(row.closure_stage)" size="small">{{ row.closure_label }}</el-tag>
+                  <span class="closure-mini">{{ row.closure_percent ?? 0 }}%</span>
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="100" align="center">
               <template #default="{ row }">
                 <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
@@ -845,6 +1194,57 @@ onMounted(async () => {
             <el-descriptions-item label="采购商">{{ detail.customer || '—' }}</el-descriptions-item>
           </el-descriptions>
 
+          <!-- 业务闭环：两侧各自「合同→结算→发票→资金凭证」，都齐且平才算闭环 -->
+          <div v-if="detail.closure" class="closure-card">
+            <div class="closure-top">
+              <span class="closure-title">业务闭环</span>
+              <el-tag :type="closureType(detail.closure.stage)" size="small">
+                {{ detail.closure.stage_label }}
+              </el-tag>
+              <span class="closure-count">
+                {{ detail.closure.requirements_done }}/{{ detail.closure.requirements_total }} 项
+              </span>
+              <span class="closure-pct">{{ detail.closure.percent }}%</span>
+            </div>
+            <el-progress
+              :percentage="detail.closure.percent"
+              :stroke-width="8"
+              :show-text="false"
+              :status="detail.closure.closed ? 'success' : undefined"
+            />
+            <div
+              v-for="key in ['up', 'down']"
+              :key="key"
+              class="closure-side"
+            >
+              <span class="side-label">{{ detail.closure.sides[key]?.label }}</span>
+              <el-tag v-if="!detail.closure.sides[key]?.applicable" size="small" type="info">不适用</el-tag>
+              <el-tag
+                v-else
+                size="small"
+                :type="detail.closure.sides[key]?.closed ? 'success' : 'warning'"
+              >
+                {{ detail.closure.sides[key]?.closed ? '已闭环' : detail.closure.sides[key]?.stage_label }}
+              </el-tag>
+              <span class="req-chips">
+                <span
+                  v-for="r in detail.closure.sides[key]?.requirements || []"
+                  :key="r.role"
+                  class="req-chip"
+                  :class="{ ok: r.ok, miss: !r.have, bad: r.have && r.amount_ok === false }"
+                  :title="r.amount != null && r.target != null
+                    ? `单据合计 ${fmtAmount(r.amount)} / ${r.target_label} ${fmtAmount(r.target)}`
+                    : ''"
+                >
+                  {{ r.have ? '✓' : '✗' }} {{ r.label }}
+                </span>
+              </span>
+            </div>
+            <div class="closure-summary" :class="{ warn: !detail.closure.closed }">
+              {{ detail.closure.summary }}
+            </div>
+          </div>
+
           <!-- 2×5 单据矩阵 -->
           <div class="section-title">单据矩阵</div>
           <div v-for="direction in ['up', 'down']" :key="direction" class="matrix-row">
@@ -854,9 +1254,23 @@ onMounted(async () => {
                 v-for="role in roleOrder"
                 :key="role"
                 class="matrix-cell"
-                :class="{ missing: (cellOf(detail.matrix, direction, role)?.count || 0) === 0 }"
+                :class="{
+                  missing: (cellOf(detail.matrix, direction, role)?.count || 0) === 0,
+                  dragging: isDraggingCell(direction, role),
+                }"
+                @dragover.prevent="onCellDragOver(direction, role)"
+                @dragleave="cellDragOver = ''"
+                @drop.prevent="onCellDrop($event, direction, role)"
               >
-                <div class="cell-role">{{ roleLabels[role] }}</div>
+                <div class="cell-role">
+                  {{ roleLabels[role] }}
+                  <span
+                    v-if="cellUploading && cellTarget?.direction === direction && cellTarget?.role === role"
+                    class="cell-busy"
+                  >
+                    识别中…
+                  </span>
+                </div>
                 <div class="cell-main">
                   <template v-if="cellOf(detail.matrix, direction, role)?.count">
                     <span class="cell-ok">✓ {{ cellOf(detail.matrix, direction, role)?.count }} 份</span>
@@ -866,8 +1280,26 @@ onMounted(async () => {
                 <div class="cell-amount">
                   {{ fmtAmount(cellOf(detail.matrix, direction, role)?.amount) }}
                 </div>
-                <div v-if="cellOf(detail.matrix, direction, role)?.candidate_count" class="cell-hint">
-                  库中 {{ cellOf(detail.matrix, direction, role)?.candidate_count }} 份未归属
+                <button
+                  v-if="cellOf(detail.matrix, direction, role)?.candidate_count"
+                  type="button"
+                  class="cell-hint cell-hint-btn"
+                  @click.stop="openCandidates(direction, role)"
+                >
+                  库中 {{ cellOf(detail.matrix, direction, role)?.candidate_count }} 份待归位 ›
+                </button>
+                <div class="cell-actions">
+                  <button
+                    v-if="cellOf(detail.matrix, direction, role)?.count"
+                    type="button"
+                    class="cell-act"
+                    @click.stop="openCellDrawer(direction, role)"
+                  >
+                    明细
+                  </button>
+                  <button type="button" class="cell-act primary" @click.stop="pickCellFile(direction, role)">
+                    {{ cellOf(detail.matrix, direction, role)?.count ? '追加' : '补单' }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -910,9 +1342,17 @@ onMounted(async () => {
                 <div v-if="row.resolution?.note" class="resolve-note">{{ row.resolution.note }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="70" align="center">
+            <el-table-column label="操作" width="110" align="center">
               <template #default="{ row }">
                 <el-button link type="primary" @click="openResolve(row)">处理</el-button>
+                <el-button
+                  v-if="row.direction && row.role && row.role !== 'other'"
+                  link
+                  type="success"
+                  @click="supplementDiff(row)"
+                >
+                  补单
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -968,6 +1408,87 @@ onMounted(async () => {
         <el-button type="primary" :loading="resolving" @click="submitResolve">确定</el-button>
       </template>
     </el-dialog>
+
+    <!-- 未归属候选：类型对得上、但系统定不到业务线的单据，人工指定方向即可入账 -->
+    <el-dialog v-model="candDialog" :title="candTitle" width="560px" append-to-body>
+      <div v-loading="candLoading" class="cand-body">
+        <div v-if="candDocs.length" class="cand-sum">
+          共 {{ candDocs.length }} 份，合计 <b>{{ fmtAmount(candTotalAmount) }}</b>
+          <span class="cand-sum-tip">金额合计对得上缺口时，挂完差异会自己消失</span>
+        </div>
+        <el-empty v-if="!candLoading && !candDocs.length" description="没有待归位的单据" :image-size="56" />
+        <div v-for="doc in candDocs" :key="doc.document_id" class="cand-item">
+          <div class="cand-main">
+            <div class="cand-name" :title="doc.filename">{{ doc.filename }}</div>
+            <div class="cand-meta">
+              <span v-if="doc.document_type">{{ doc.document_type }}</span>
+              <span v-if="doc.doc_date"> · {{ doc.doc_date }}</span>
+              <span v-if="doc.company"> · {{ doc.company }}</span>
+              <span v-if="doc.contract_no"> · {{ doc.contract_no }}</span>
+            </div>
+            <div class="cand-reason">{{ doc.reason }}</div>
+          </div>
+          <div class="cand-right">
+            <div class="cand-amount">{{ fmtAmount(doc.amount) }}</div>
+            <el-button link type="primary" :disabled="candLinking" @click="linkCandidate(doc)">挂上</el-button>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="candDialog = false">关闭</el-button>
+        <el-button
+          v-if="candDocs.length > 1"
+          type="primary"
+          :loading="candLinking"
+          @click="linkAllCandidates"
+        >
+          全部挂上（{{ candDocs.length }}）
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 槽位明细（1 对 N）：一份合同常常对应多张发票、分批回款 -->
+    <el-drawer
+      v-model="cellDrawer"
+      :size="isMobile ? '92%' : '480px'"
+      :title="cellDrawerTitle"
+      append-to-body
+      destroy-on-close
+    >
+      <div v-loading="cellDrawerLoading" class="cell-docs">
+        <el-empty v-if="!cellDocs.length" description="这个槽位还没有单据" :image-size="56" />
+        <div v-for="doc in cellDocs" :key="doc.document_id" class="cell-doc">
+          <div class="cell-doc-main">
+            <div class="cell-doc-name" :title="doc.current_filename || doc.filename">
+              {{ doc.current_filename || doc.filename }}
+            </div>
+            <div class="cell-doc-sub">{{ doc.status }} · {{ doc.created_at || '—' }}</div>
+          </div>
+          <el-button link type="danger" size="small" @click="removeCellDoc(doc)">取消关联</el-button>
+        </div>
+
+        <div v-if="cellDrawerCell" class="cell-doc-foot">
+          <el-button
+            type="primary"
+            plain
+            :loading="cellUploading"
+            @click="pickCellFile(cellDrawerCell.direction, cellDrawerCell.role)"
+          >
+            再传一份
+          </el-button>
+          <span class="cell-doc-tip">金额按单据自动合计；取消关联不动原件</span>
+        </div>
+      </div>
+    </el-drawer>
+
+    <!-- 槽位上传的统一入口：点哪个格子就传进哪个格子 -->
+    <input
+      ref="cellFileInput"
+      type="file"
+      class="cell-file-input"
+      accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.xlsx,.xls,.doc,.docx"
+      @change="onCellFileChange"
+    />
   </div>
 </template>
 
@@ -1122,6 +1643,87 @@ onMounted(async () => {
 .amount-desc {
   margin-bottom: 8px;
 }
+
+/* ---------- 业务闭环 ---------- */
+.closure-card {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  background: #fafbfc;
+}
+.closure-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.closure-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: #303133;
+}
+.closure-count {
+  font-size: 12px;
+  color: #909399;
+}
+.closure-pct {
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 600;
+  color: #409eff;
+}
+.closure-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.side-label {
+  font-size: 12px;
+  color: #606266;
+  min-width: 26px;
+}
+.req-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.req-chip {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #f4f4f5;
+  color: #909399;
+}
+.req-chip.ok {
+  background: #f0f9eb;
+  color: #529b2e;
+}
+.req-chip.miss {
+  background: #fef0f0;
+  color: #c45656;
+}
+.req-chip.bad {
+  background: #fdf6ec;
+  color: #b88230;
+  font-weight: 600;
+}
+.closure-summary {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #67c23a;
+  line-height: 1.6;
+}
+.closure-summary.warn {
+  color: #908e8b;
+}
+.closure-mini {
+  margin-left: 4px;
+  font-size: 12px;
+  color: #909399;
+}
 .section-title {
   font-weight: 600;
   color: #303133;
@@ -1184,6 +1786,157 @@ onMounted(async () => {
   font-size: 11px;
   color: #b45309;
   margin-top: 4px;
+}
+.cell-hint-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  font-family: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.cell-hint-btn:hover {
+  color: #92400e;
+}
+.cand-body {
+  min-height: 120px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.cand-sum {
+  font-size: 12px;
+  color: #475569;
+  padding: 0 2px 10px;
+}
+.cand-sum b {
+  color: #0f172a;
+}
+.cand-sum-tip {
+  margin-left: 8px;
+  color: #94a3b8;
+}
+.cand-item {
+  display: flex;
+  gap: 10px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.cand-main {
+  flex: 1;
+  min-width: 0;
+}
+.cand-name {
+  font-size: 13px;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cand-meta {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cand-reason {
+  font-size: 11px;
+  color: #b45309;
+  margin-top: 2px;
+}
+.cand-right {
+  flex: 0 0 auto;
+  text-align: right;
+}
+.cand-amount {
+  font-size: 12px;
+  color: #0f172a;
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+.cell-busy {
+  margin-left: 4px;
+  font-size: 11px;
+  color: #2563eb;
+}
+.matrix-cell.dragging {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.16);
+}
+.cell-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.cell-act {
+  flex: 1;
+  padding: 4px 0;
+  font-size: 11px;
+  line-height: 1;
+  color: #475569;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.cell-act:hover {
+  color: #2563eb;
+  border-color: #2563eb;
+}
+.cell-act.primary {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  font-weight: 600;
+}
+.cell-file-input {
+  display: none;
+}
+.cell-docs {
+  min-height: 160px;
+}
+.cell-doc {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.cell-doc-main {
+  flex: 1;
+  min-width: 0;
+}
+.cell-doc-name {
+  font-size: 13px;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cell-doc-sub {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 2px;
+}
+.cell-doc-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+.cell-doc-tip {
+  font-size: 11px;
+  color: #94a3b8;
 }
 .new-tag {
   margin-left: 4px;

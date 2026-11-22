@@ -315,6 +315,10 @@ export interface UploadResponse {
   document_id: number
   filename: string
   status: string
+  // 内容 hash 命中已有文档时 status=duplicate，这三个字段说明命中了哪一份
+  duplicate_of?: string | null
+  duplicate_status?: string | null
+  duplicate_time?: string | null
 }
 
 export function uploadDocument(file: File): Promise<UploadResponse> {
@@ -1012,6 +1016,8 @@ export interface BusinessArchiveListResp {
 export interface BusinessArchiveDetailResp {
   ok: boolean
   data: BusinessRecordOut
+  /** 本次归集顺带重算的对账业务线（档案 → 对账自动挂上） */
+  recomputed?: string[]
 }
 
 export interface BusinessArchiveCreate {

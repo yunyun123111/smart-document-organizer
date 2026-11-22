@@ -77,6 +77,8 @@ const sourceLabels: Record<string, string> = {
   auto_rule: '自动规则',
   excel_ledger: 'Excel台账',
   manual: '手动',
+  recon_link: '对账补单',
+  recon_ledger: '对账回填',
 }
 
 function statusLabel(v: string): string {
@@ -282,16 +284,21 @@ async function doLink() {
   linking.value = true
   let okCount = 0
   let failCount = 0
+  const recomputed = new Set<string>()
   try {
     for (const docId of selectedDocIds.value) {
       try {
-        await addBusinessFile(current.value.id, docId)
+        const res = await addBusinessFile(current.value.id, docId)
         okCount += 1
+        for (const bn of res?.recomputed || []) recomputed.add(bn)
       } catch {
         failCount += 1
       }
     }
-    if (okCount > 0) ElMessage.success(`已关联 ${okCount} 份文档`)
+    if (okCount > 0) {
+      const extra = recomputed.size ? `，已同步重算对账 ${[...recomputed].join('、')}` : ''
+      ElMessage.success(`已关联 ${okCount} 份文档${extra}`)
+    }
     if (failCount > 0) ElMessage.warning(`${failCount} 份文档关联失败`)
     linkVisible.value = false
     await loadList()
@@ -376,9 +383,13 @@ async function doBackfill() {
   try {
     const res = await backfillBusinessArchives()
     const st = res.stats || {}
+    const recon = (st.from_reconciliation || {}) as Record<string, number>
+    const reconNote = recon.created
+      ? `；对账侧补进档案 ${recon.created} 条`
+      : ''
     ElMessage.success(
       `归集完成：新建档案 ${st.created_records ?? 0}，关联 ${st.linked ?? 0} 份单据，` +
-        `无合同号跳过 ${st.skipped_no_contract ?? 0}，失败 ${st.failed ?? 0}`,
+        `无合同号跳过 ${st.skipped_no_contract ?? 0}，失败 ${st.failed ?? 0}${reconNote}`,
     )
     await loadList()
   } catch {
