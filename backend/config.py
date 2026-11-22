@@ -6,13 +6,102 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录 = 本文件的上两级目录（backend/config.py -> 项目根）
+# 打包成 exe 后，这里就是 exe 所在目录（PyInstaller onedir）
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 是否以打包形态运行（PyInstaller 会在启动时注入 sys.frozen）
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
+# 用户可见的目录：打包后是 exe 所在目录（portable.flag 放这里），
+# 源码运行时与 BASE_DIR 相同。
+APP_DIR = Path(sys.executable).resolve().parent if IS_FROZEN else BASE_DIR
+
+
+def _resolve_data_home() -> Path:
+    """运行数据根目录（数据库、文档、日志、配置）。
+
+    源码运行：项目根 data/ —— 保持开发与调试习惯不变。
+    安装形态：%APPDATA%/SmartDocOrganizer —— Program Files 无写权限，
+              且覆盖安装会清掉程序目录，数据必须放在用户目录。
+    绿色便携：程序目录放一个 portable.flag，数据留在程序目录。
+
+    SDO_DATA_HOME 环境变量优先级最高，用于部署机、测试或迁移时临时指定。
+    """
+    raw = os.environ.get("SDO_DATA_HOME", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    if (APP_DIR / "portable.flag").exists():
+        return (APP_DIR / "data").resolve()
+    if IS_FROZEN:
+        appdata = os.environ.get("APPDATA", "").strip()
+        if appdata:
+            return (Path(appdata) / "SmartDocOrganizer").resolve()
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        if local:
+            return (Path(local) / "SmartDocOrganizer").resolve()
+    return (BASE_DIR / "data").resolve()
+
+
+DATA_HOME = _resolve_data_home()
+
+# 扩展包目录：安装形态下，视觉扩展包（OCR + OpenCV）下载后解压到这里，
+# 每个子目录是一个扩展包（当前只有 vision）。
+EXTENSIONS_DIR = DATA_HOME / "extensions"
+
+
+def _activate_extensions() -> list[str]:
+    """把已安装的扩展包挂到 sys.path，使其中的第三方包可被 import。
+
+    主安装包不含 cv2 / rapidocr / onnxruntime / numpy，它们由设置页下载的
+    扩展包提供。PyInstaller 冻结环境下 sys.path 只有 _internal，因此必须在导入
+    任何业务模块之前显式插入扩展目录；.pyd 依赖同目录 DLL，还要注册 DLL 目录。
+    """
+    activated: list[str] = []
+    if not EXTENSIONS_DIR.is_dir():
+        return activated
+    for pkg_dir in sorted(EXTENSIONS_DIR.iterdir()):
+        if not pkg_dir.is_dir() or pkg_dir.name.startswith("."):
+            continue
+        path = str(pkg_dir)
+        if path not in sys.path:
+            sys.path.insert(0, path)
+        activated.append(pkg_dir.name)
+        if os.name == "nt":
+            dll_dirs = {path}
+            for dll in pkg_dir.rglob("*.dll"):
+                dll_dirs.add(str(dll.parent))
+            for d in dll_dirs:
+                try:
+                    os.add_dll_directory(d)
+                except OSError:  # 目录不存在或无权限，忽略
+                    pass
+    return activated
+
+
+ACTIVATED_EXTENSIONS = _activate_extensions()
+
+
+def _resolve_env_file() -> Path:
+    """配置文件位置。
+
+    源码运行沿用项目根 .env（现有部署脚本与文档都依赖它）。
+    安装/便携形态写到数据目录下的 config.env，避免写程序目录失败。
+    """
+    if IS_FROZEN or (APP_DIR / "portable.flag").exists():
+        return DATA_HOME / "config.env"
+    return BASE_DIR / ".env"
+
+
+# 全进程唯一的配置文件路径：Settings 读取与 update() 回写都用它
+ENV_FILE = _resolve_env_file()
 
 
 def _resolve_dir(raw: str) -> Path:
@@ -25,12 +114,12 @@ def _resolve_dir(raw: str) -> Path:
     p = Path(str(raw)).expanduser()
     if p.is_absolute():
         return p
-    return (BASE_DIR / p).resolve()
+    return ((DATA_HOME if IS_FROZEN else BASE_DIR) / p).resolve()
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(BASE_DIR / ".env"),
+        env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -41,21 +130,21 @@ class Settings(BaseSettings):
     DEBUG: bool = True
 
     # 数据库
-    DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'data/database/app.db'}"
+    DATABASE_URL: str = f"sqlite:///{DATA_HOME / 'database/app.db'}"
 
     # 目录
-    DOCUMENT_ROOT: str = str(BASE_DIR / "data/documents")
-    INBOX_ROOT: str = str(BASE_DIR / "data/inbox")
-    TEMP_DIR: str = str(BASE_DIR / "data/temp")
-    RECYCLE_BIN_ROOT: str = str(BASE_DIR / "data/recycle_bin")
+    DOCUMENT_ROOT: str = str(DATA_HOME / "documents")
+    INBOX_ROOT: str = str(DATA_HOME / "inbox")
+    TEMP_DIR: str = str(DATA_HOME / "temp")
+    RECYCLE_BIN_ROOT: str = str(DATA_HOME / "recycle_bin")
     # 归档目录结构模板（/ 分隔；支持 category/year/month/day/date 及任意业务字段名，
     # 如 customer/counterparty/contract_no/project_no/ship_name；字段缺失时该段自动跳过）
     ARCHIVE_TEMPLATE: str = "category/year/month"
-    EXCEL_SOURCES_ROOT: str = str(BASE_DIR / "data/excel_sources")
+    EXCEL_SOURCES_ROOT: str = str(DATA_HOME / "excel_sources")
 
     # 日志
     LOG_LEVEL: str = "INFO"
-    LOG_DIR: str = str(BASE_DIR / "data/logs")
+    LOG_DIR: str = str(DATA_HOME / "logs")
 
     # 文件操作
     ALLOW_OVERWRITE: bool = False
@@ -178,7 +267,7 @@ class Settings(BaseSettings):
             self.log_dir,
             Path(self.DATABASE_URL.replace("sqlite:///", "")).parent
             if self.DATABASE_URL.startswith("sqlite")
-            else BASE_DIR / "data/database",
+            else DATA_HOME / "database",
         ):
             fs_mkdir(p)
 
@@ -233,8 +322,8 @@ class Settings(BaseSettings):
             self._persist(changed)
 
     def _persist(self, fields: list[str] | None = None) -> None:
-        """把指定字段写回 .env 文件（保留已有注释与未管理项）。"""
-        env_path = BASE_DIR / ".env"
+        """把指定字段写回配置文件（保留已有注释与未管理项）。"""
+        env_path = ENV_FILE
         data = {f: getattr(self, f) for f in fields} if fields else self.model_dump()
         lines: list[str] = []
         written = set()

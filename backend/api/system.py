@@ -243,3 +243,27 @@ def watch_status():
 
     return get_status()
 
+
+@router.get("/version")
+def version(refresh: bool = False):
+    """当前构建版本与远端最新版本（refresh=true 强制重新拉清单）。"""
+    from backend.services import update_service
+
+    return update_service.info(force=refresh)
+
+
+@router.get("/update/progress")
+def update_progress():
+    """版本更新下载进度。"""
+    from backend.services import update_service
+
+    return {"state": update_service.get_state()}
+
+
+@router.post("/update")
+def apply_update():
+    """下载最新安装包并静默升级（应用会自动重启）。"""
+    from backend.services import update_service
+
+    return update_service.start_update()
+

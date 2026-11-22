@@ -39,3 +39,10 @@ build_portable/
 
 # 每次发布会重新生成的离线包
 release/
+
+# PyInstaller 打包产物
+dist/
+build/
+
+# 构建号由打包脚本生成
+packaging/build_version.txt

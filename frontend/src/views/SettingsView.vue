@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   checkEmailNow,
@@ -42,6 +42,15 @@ import {
   type WatchStatus,
   testOCRHealth,
   type OCRHealth,
+  listExtensions,
+  installExtension,
+  getExtensionProgress,
+  uninstallExtension,
+  type ExtensionItem,
+  getVersion,
+  getUpdateProgress,
+  startUpdate,
+  type VersionInfo,
 } from '@/api'
 
 const form = ref<Settings | null>(null)
@@ -515,11 +524,212 @@ async function runExcelTest(src: ExcelSource) {
   excelTestResult.value = r.match
 }
 
-onMounted(() => { load(); loadExcelSources() })
+// ---------- 版本更新 ----------
+const versionInfo = ref<VersionInfo | null>(null)
+const versionLoading = ref(false)
+const updState = ref({ phase: 'idle', progress: 0, message: '', error: '' })
+let updTimer: number | null = null
+
+async function loadVersion(refresh = false) {
+  versionLoading.value = true
+  try {
+    versionInfo.value = await getVersion(refresh)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    versionLoading.value = false
+  }
+}
+
+async function onCheckUpdate() {
+  await loadVersion(true)
+  if (!versionInfo.value?.supported) {
+    ElMessage.info(versionInfo.value?.message || '当前模式不支持自动更新')
+  } else if (versionInfo.value?.has_update) {
+    ElMessage.success('发现新版本')
+  } else {
+    ElMessage.success('已是最新版本')
+  }
+}
+
+function stopUpdPolling() {
+  if (updTimer) {
+    window.clearInterval(updTimer)
+    updTimer = null
+  }
+}
+
+function startUpdPolling() {
+  stopUpdPolling()
+  updTimer = window.setInterval(async () => {
+    try {
+      const r = await getUpdateProgress()
+      updState.value = r.state
+      if (r.state.phase === 'error') {
+        stopUpdPolling()
+        ElMessage.error(r.state.error || '更新失败')
+      }
+    } catch {
+      stopUpdPolling()
+    }
+  }, 800)
+}
+
+async function onApplyUpdate() {
+  const size = Math.round((versionInfo.value?.latest?.size || 0) / 1048576)
+  try {
+    await ElMessageBox.confirm(
+      `将下载约 ${size} MB 的新版本安装包，下载完成后自动静默安装并重启应用。更新期间请勿关闭程序，是否继续？`,
+      '更新到最新版本',
+      { type: 'warning', confirmButtonText: '立即更新' },
+    )
+  } catch {
+    return
+  }
+  const r = await startUpdate()
+  if (!r.started) {
+    ElMessage.warning(r.reason || '无法开始更新')
+    return
+  }
+  updState.value = { phase: 'downloading', progress: 0, message: '准备下载...', error: '' }
+  startUpdPolling()
+}
+
+// ---------- 功能扩展包（OCR / OpenCV 按需下载） ----------
+const extensions = ref<ExtensionItem[]>([])
+const extLoading = ref(false)
+const extDir = ref('')
+let extTimer: number | null = null
+
+async function loadExtensions() {
+  extLoading.value = true
+  try {
+    const r = await listExtensions()
+    extensions.value = r.items
+    extDir.value = r.extensions_dir
+  } catch {
+    // http 拦截器已提示
+  } finally {
+    extLoading.value = false
+  }
+}
+
+function extBusy(e: ExtensionItem) {
+  return e.state.phase === 'downloading' || e.state.phase === 'installing'
+}
+
+function stopExtPolling() {
+  if (extTimer) {
+    window.clearInterval(extTimer)
+    extTimer = null
+  }
+}
+
+function startExtPolling(name: string) {
+  stopExtPolling()
+  extTimer = window.setInterval(async () => {
+    try {
+      const r = await getExtensionProgress(name)
+      const item = extensions.value.find((x) => x.name === name)
+      if (item) item.state = r.state
+      if (r.state.phase === 'done' || r.state.phase === 'error') {
+        stopExtPolling()
+        await loadExtensions()
+        if (r.state.phase === 'done') ElMessage.success('扩展包安装完成，重启应用后生效')
+        else ElMessage.error(r.state.error || '安装失败')
+      }
+    } catch {
+      stopExtPolling()
+    }
+  }, 800)
+}
+
+async function onInstallExt(e: ExtensionItem) {
+  const size = Math.round((e.remote_size || e.size_hint) / 1048576)
+  try {
+    await ElMessageBox.confirm(
+      `将下载约 ${size} MB 的扩展包（OCR 识别 + OpenCV 盖章检测），安装完成后需重启应用才生效。下载期间其他功能可正常使用。`,
+      e.installed ? '重新安装扩展包' : '安装功能扩展',
+      { type: 'info', confirmButtonText: '开始下载' },
+    )
+  } catch {
+    return
+  }
+  const r = await installExtension(e.name)
+  if (!r.started) {
+    ElMessage.warning(r.reason || '已有安装任务在进行')
+    return
+  }
+  ElMessage.success('已开始下载，请稍候')
+  startExtPolling(e.name)
+}
+
+async function onUninstallExt(e: ExtensionItem) {
+  try {
+    await ElMessageBox.confirm(
+      '卸载后，扫描件文字识别与图片盖章检测将不可用，其余功能不受影响。是否继续？',
+      '卸载扩展包',
+      { type: 'warning', confirmButtonText: '卸载' },
+    )
+  } catch {
+    return
+  }
+  const r = await uninstallExtension(e.name)
+  if (r.pending) ElMessage.warning(r.reason || '文件被占用，重启应用后自动删除')
+  else ElMessage.success('已卸载')
+  await loadExtensions()
+}
+
+onMounted(() => { load(); loadExcelSources(); loadExtensions(); loadVersion() })
+onUnmounted(() => { stopExtPolling(); stopUpdPolling() })
 </script>
 
 <template>
   <div v-if="loaded && form" class="settings-page">
+    <el-card shadow="never" class="mb16">
+      <template #header>
+        <span>版本更新</span>
+        <el-button link size="small" style="margin-left: 8px" @click="onCheckUpdate">检查更新</el-button>
+      </template>
+      <div v-loading="versionLoading">
+        <div v-if="!versionInfo" class="gray small">正在读取版本信息...</div>
+        <div v-else-if="!versionInfo.supported" class="gray small">{{ versionInfo.message }}</div>
+        <div v-else>
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+            <span>当前构建 <code>{{ versionInfo.current_build || '未知' }}</code></span>
+            <el-tag
+              :type="versionInfo.has_update ? 'warning' : 'success'"
+              size="small"
+            >{{ versionInfo.has_update ? `有新版本 ${versionInfo.latest?.build}` : '已是最新版本' }}</el-tag>
+          </div>
+          <div
+            v-if="versionInfo.has_update && versionInfo.latest"
+            class="gray small"
+            style="margin-top: 6px; line-height: 1.7"
+          >
+            {{ versionInfo.latest.notes || '包含功能改进与问题修复。' }}<br />
+            安装包约 {{ Math.round(versionInfo.latest.size / 1048576) }} MB
+          </div>
+          <div v-if="updState.phase === 'downloading' || updState.phase === 'launching'" style="margin-top: 10px">
+            <el-progress :percentage="Math.round(updState.progress)" />
+            <div class="gray small" style="margin-top: 4px">{{ updState.message }}</div>
+          </div>
+          <div
+            v-else
+            style="margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap"
+          >
+            <el-button
+              v-if="versionInfo.has_update"
+              type="primary"
+              size="small"
+              @click="onApplyUpdate"
+            >立即更新</el-button>
+            <span v-if="versionInfo.has_update" class="gray small">下载完成后会自动安装并重启，无需手动操作</span>
+          </div>
+        </div>
+      </div>
+    </el-card>
+
     <el-card shadow="never" class="mb16">
       <template #header>
         <span>配置状态</span>
@@ -550,6 +760,60 @@ onMounted(() => { load(); loadExcelSources() })
             </el-table>
           </el-collapse-item>
         </el-collapse>
+      </div>
+    </el-card>
+
+    <el-card shadow="never" class="mb16">
+      <template #header>
+        <span>功能扩展</span>
+        <el-button link size="small" style="margin-left: 8px" @click="loadExtensions">刷新</el-button>
+        <span class="gray small" style="margin-left: 8px">按需下载，主程序保持轻量</span>
+      </template>
+      <div v-loading="extLoading">
+        <div
+          v-for="e in extensions"
+          :key="e.name"
+          style="border: 1px solid #ebeef5; border-radius: 6px; padding: 12px 14px; margin-bottom: 10px"
+        >
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+            <strong>{{ e.title }}</strong>
+            <el-tag v-if="e.installed" type="success" size="small">已安装 {{ e.version }}</el-tag>
+            <el-tag v-else type="info" size="small">未安装</el-tag>
+            <el-tag v-if="e.requires_restart" type="warning" size="small">重启后生效</el-tag>
+            <el-tag v-if="e.update_available" size="small">有新版本 {{ e.remote_version }}</el-tag>
+            <el-tag v-if="e.pending_delete" type="danger" size="small">重启后删除</el-tag>
+          </div>
+          <div class="gray small" style="margin-top: 6px; line-height: 1.7">
+            {{ e.summary }}<br />
+            {{ e.detail }}
+          </div>
+          <div v-if="extBusy(e)" style="margin-top: 8px">
+            <el-progress
+              :percentage="Math.round(e.state.progress)"
+              :status="e.state.phase === 'error' ? 'exception' : undefined"
+            />
+            <div class="gray small" style="margin-top: 4px">{{ e.state.message }}</div>
+          </div>
+          <div v-else style="margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+            <el-button v-if="!e.installed" type="primary" size="small" @click="onInstallExt(e)">
+              一键下载安装（约 {{ Math.round((e.remote_size || e.size_hint) / 1048576) }} MB）
+            </el-button>
+            <el-button v-else size="small" @click="onInstallExt(e)">
+              {{ e.update_available ? '更新到最新版' : '重新安装' }}
+            </el-button>
+            <el-button v-if="e.installed" size="small" type="danger" plain @click="onUninstallExt(e)">
+              卸载
+            </el-button>
+            <span class="gray small">
+              {{ e.installed ? `占用 ${(e.size / 1048576).toFixed(0)} MB` : e.remote_ok ? '可从仓库下载' : '清单读取失败，检查网络后点刷新' }}
+            </span>
+            <span v-if="e.installed" class="gray small">
+              本进程状态：OCR {{ e.runtime.ocr ? '✓ 可用' : '✗ 未加载' }}　盖章检测
+              {{ e.runtime.seal ? '✓ 可用' : '✗ 未加载' }}
+            </span>
+          </div>
+        </div>
+        <div class="gray small">安装位置：{{ extDir }}</div>
       </div>
     </el-card>
 
@@ -622,8 +886,8 @@ onMounted(() => { load(); loadExcelSources() })
         </el-form-item>
         <el-form-item label="手机访问方式">
           <div class="gray small">
-            启动脚本已开放局域网（0.0.0.0）。手机与电脑连同一 WiFi，浏览器打开
-            <code>http://电脑IP:8000</code>（启动窗口会显示具体地址），即可上传文件自动归档。
+            启动窗口会显示当前访问地址（端口由程序自动分配，不再固定 8000）。手机与电脑连同一 WiFi 后打开该地址即可上传归档；
+            如需开放局域网，在配置中设置 <code>SDO_HOST=0.0.0.0</code> 并同时设置访问密码。
           </div>
         </el-form-item>
       </el-form>

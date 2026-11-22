@@ -20,6 +20,7 @@ from backend.api.backup import router as backup_router
 from backend.api.business_archives import router as business_archives_router
 from backend.api.categories import router as categories_router
 from backend.api.email import router as email_router
+from backend.api.extensions import router as extensions_router
 from backend.api.documents import router as documents_router
 from backend.api.excel_sources import router as excel_sources_router
 from backend.api.filename_rules import router as filename_rules_router
@@ -44,6 +45,13 @@ async def lifespan(app: FastAPI):
     setup_logging(settings.log_dir, settings.LOG_LEVEL)
     logger = get_logger("main")
     logger.info("=== %s 启动 (env=%s) ===", settings.APP_NAME, settings.APP_ENV)
+    # 清理上次卸载扩展包时被占用、没能删掉的残留目录
+    try:
+        from backend.services.extension_service import apply_pending_deletions
+
+        apply_pending_deletions()
+    except Exception:
+        logger.exception("扩展包残留清理失败（不影响启动）")
     init_db()
     # 上次进程被 kill/重启时遗留的 running 任务，标记为 interrupted
     try:
@@ -93,6 +101,7 @@ app = FastAPI(
 # 注册路由
 app.include_router(auth_router)
 app.include_router(email_router)
+app.include_router(extensions_router)
 app.include_router(system_router)
 app.include_router(categories_router)
 app.include_router(documents_router)

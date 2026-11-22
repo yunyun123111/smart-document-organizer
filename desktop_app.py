@@ -18,16 +18,35 @@ import sys
 import time
 import traceback
 import webbrowser
+import json
 from pathlib import Path
 
-HOST = "0.0.0.0"
-PORT = 8000
+# 安装形态默认只监听本机（避免 Windows 防火墙弹窗与端口暴露）；
+# 源码运行保留局域网访问能力。可用 SDO_HOST 显式覆盖。
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+HOST = os.environ.get("SDO_HOST", "127.0.0.1" if IS_FROZEN else "0.0.0.0").strip() or "127.0.0.1"
+# 端口不再写死：默认由系统分配空闲端口，SDO_PORT 可固定（部署机排障用）
+PORT = 0
 BASE = Path(__file__).resolve().parent
-LOG = BASE / "data" / "desktop_app.log"
-LOCK = BASE / "data" / ".desktop_app.pid"
+try:
+    from backend.config import DATA_HOME  # 安装形态下指向 %APPDATA%
+except Exception:
+    DATA_HOME = BASE / "data"
+LOG = DATA_HOME / "desktop_app.log"
+LOCK = DATA_HOME / ".desktop_app.pid"
 WINDOW_TITLE = "智能文档整理系统"
 WINDOW_WIDTH = 1380
 WINDOW_HEIGHT = 900
+
+
+def pick_port() -> int:
+    """返回可用端口：优先环境变量，其次由系统分配。"""
+    raw = os.environ.get("SDO_PORT", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 def log(msg: str) -> None:
@@ -58,34 +77,63 @@ def local_ip() -> str:
         return "127.0.0.1"
 
 
-def wait_port(timeout: float = 40) -> bool:
+def wait_port(port: int, timeout: float = 40) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if port_in_use(PORT):
+        if port_in_use(port):
             return True
         time.sleep(0.5)
     return False
 
 
-def acquire_lock() -> bool:
-    """防重复实例：已有 desktop_app 在跑时返回 False（不重复弹窗）。"""
+def read_lock() -> dict:
+    """读取实例锁。兼容旧版纯 pid 文本格式。"""
     try:
-        if LOCK.exists():
-            try:
-                pid = int(LOCK.read_text(encoding="utf-8").strip())
-                os.kill(pid, 0)  # 进程存在则不抛异常
-                return False
-            except (ValueError, OSError):
-                pass  # 锁文件过期（进程已退出）
-        LOCK.write_text(str(os.getpid()), encoding="utf-8")
+        txt = LOCK.read_text(encoding="utf-8").strip()
+        if not txt:
+            return {}
+        data = json.loads(txt)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    try:
+        return {"pid": int(txt)}
+    except Exception:
+        return {}
+
+
+def lock_owner_alive(info: dict) -> bool:
+    try:
+        pid = int(info.get("pid", 0))
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
         return True
     except Exception:
-        return True  # 锁不可用时放行，避免误拦
+        return False
+
+
+def acquire_lock(port: int) -> bool:
+    """防重复实例：已有实例存活时返回 False（并带上它的端口）。"""
+    info = read_lock()
+    if info and lock_owner_alive(info):
+        return False
+    try:
+        LOCK.parent.mkdir(parents=True, exist_ok=True)
+        LOCK.write_text(
+            json.dumps({"pid": os.getpid(), "port": port, "host": "127.0.0.1"}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # 锁不可用时放行，避免误拦
+    return True
 
 
 def release_lock() -> None:
     try:
-        if LOCK.exists() and LOCK.read_text(encoding="utf-8").strip() == str(os.getpid()):
+        info = read_lock()
+        if info.get("pid") == os.getpid():
             LOCK.unlink()
     except Exception:
         pass
@@ -97,39 +145,48 @@ def main() -> int:
     log("   智能文档整理系统  桌面版")
     log("=" * 46)
 
-    if not acquire_lock():
-        log("[提示] 系统已在运行（桌面版或后端服务），请直接查看已打开的窗口。")
-        log("[提示] 若未见窗口，请在浏览器打开 http://127.0.0.1:8000")
+    existing = read_lock()
+    if existing and lock_owner_alive(existing):
+        p = int(existing.get("port") or 8000)
+        log(f"[提示] 系统已在运行，请直接访问 http://127.0.0.1:{p}")
+        return 0
+
+    port = pick_port()
+    if not acquire_lock(port):
+        info = read_lock()
+        p = int(info.get("port") or 8000)
+        log(f"[提示] 系统已在运行，请直接访问 http://127.0.0.1:{p}")
         return 0
 
     own_server = False
     proc = None
     try:
-        if port_in_use(PORT):
-            log(f"[系统] 服务已在运行（端口 {PORT}），直接打开窗口...")
+        if port_in_use(port):
+            log(f"[系统] 端口 {port} 已有服务在运行，直接打开窗口...")
         else:
-            log("[系统] 正在启动后端服务，请稍候...")
+            log(f"[系统] 正在启动后端服务（端口 {port}），请稍候...")
             try:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "uvicorn", "backend.main:app",
-                     "--host", HOST, "--port", str(PORT)],
-                    cwd=str(BASE),
-                )
+                if IS_FROZEN:
+                    cmd = [sys.executable, "--serve", "--host", HOST, "--port", str(port)]
+                else:
+                    cmd = [sys.executable, "-m", "uvicorn", "backend.main:app",
+                           "--host", HOST, "--port", str(port)]
+                proc = subprocess.Popen(cmd, cwd=str(BASE))
             except Exception as e:
                 log(f"[错误] 后端启动失败: {e}")
                 return 1
             own_server = True
-            if not wait_port():
-                log("[错误] 后端启动超时（40 秒内未监听 8000 端口），请检查后端依赖与日志。")
+            if not wait_port(port):
+                log(f"[错误] 后端启动超时（40 秒内未监听 {port} 端口），请检查后端依赖与日志。")
                 try:
                     proc.terminate()
                 except Exception:
                     pass
                 return 1
 
-        url = f"http://127.0.0.1:{PORT}"
+        url = f"http://127.0.0.1:{port}"
         log(f"[系统] 本机访问: {url}")
-        log(f"[系统] 局域网访问: http://{local_ip()}:{PORT}")
+        log(f"[系统] 局域网访问: http://{local_ip()}:{port}")
         log("[系统] 正在打开桌面窗口，关闭窗口即退出系统...")
 
         try:
@@ -191,7 +248,52 @@ def main() -> int:
         release_lock()
 
 
+def _ensure_streams() -> None:
+    """窗口模式（无控制台）下 stdout/stderr 为 None，uvicorn 的日志处理器会炸。
+
+    这里把输出接到数据目录的 server.log，既避免报错，也方便装完后排障。
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        f = open(LOG.parent / "server.log", "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = f
+        if sys.stderr is None:
+            sys.stderr = f
+    except Exception:
+        pass
+
+
+def serve_cli() -> int:
+    """打包形态的后端入口：`exe --serve --host H --port P`。
+
+    PyInstaller 下 sys.executable 就是 exe 本身，不能再 `-m uvicorn`，
+    所以主进程用这个参数把自己拉起成一个纯后端进程。
+    """
+    _ensure_streams()
+    host, port = HOST, 8000
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--host" and i + 1 < len(argv):
+            host = argv[i + 1]
+        elif a == "--port" and i + 1 < len(argv):
+            try:
+                port = int(argv[i + 1])
+            except ValueError:
+                pass
+    import uvicorn
+    uvicorn.run("backend.main:app", host=host, port=port, log_level="info")
+    return 0
+
+
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    if "--serve" in sys.argv:
+        sys.exit(serve_cli())
     try:
         sys.exit(main())
     except KeyboardInterrupt:

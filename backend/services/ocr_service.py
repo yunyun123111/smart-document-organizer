@@ -325,6 +325,10 @@ class OCRService:
             )
             return result
         except Exception as e:  # noqa: BLE001
+            # 主包不带 OCR 依赖（视觉能力由扩展包提供）：缺依赖只降级，不中断整理
+            if isinstance(e, ImportError):
+                logger.warning("OCR 引擎未安装（缺少视觉扩展包），跳过识别: %s", e)
+                return OCRResult(text="", confidence=0.0, provider="unavailable")
             # 非默认引擎失败时回退 rapidocr，避免单个模型服务故障阻塞整个整理流程
             if provider.name != "rapidocr" and settings.OCR_FALLBACK:
                 logger.warning("%s 识别失败，回退 rapidocr：%s", provider.name, e)

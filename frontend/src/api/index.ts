@@ -1,5 +1,8 @@
 import http from './http'
 
+export * from './extensions'
+export * from './update'
+
 // ---------- 系统 / Dashboard ----------
 export interface DashboardStats {
   total_documents: number
