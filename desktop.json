@@ -1,0 +1,8 @@
+{
+  "version": "1.0.0",
+  "build": "20261122.142546",
+  "setup_file": "SmartDocOrganizer-Setup-1.0.0.exe",
+  "setup_sha256": "150c84e6fdc8bbb85c4abbab3c0478aeafc92edf608304492c69b226294319ea",
+  "setup_size": 46348065,
+  "notes": "1. 主程序瘦身到 44 MB（原 102 MB），OCR 与 OpenCV 改为设置页按需下载的扩展包（约 52 MB）；2. 设置页新增「功能扩展」：一键下载 / 更新 / 卸载，可查看本进程 OCR 与盖章检测是否可用；3. 设置页新增「版本更新」：一键下载新版本并静默升级，无需手动重装"
+}
