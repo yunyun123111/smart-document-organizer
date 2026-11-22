@@ -1,8 +1,8 @@
 {
-  "version": "20261121.141233",
-  "built_at": "2026-11-21 14:12:33",
+  "version": "20261122.122857",
+  "built_at": "2026-11-22 12:28:57",
   "requirements_sha": "b637b055e40530f7c4823785daf39051d965987a95dca09b18429d51e3e90e2a",
-  "git_head": "1bae36a",
-  "zip_sha256": "33be3a01288aa2a9e67037d942b1c46935483869766e62fb260a47bd69df0eb1",
-  "zip_size": 1355016
+  "git_head": "31edc01",
+  "zip_sha256": "d4c393d826b2711757739d274a7f0792bfdbd90e07e553aa32319a6b26745790",
+  "zip_size": 1387655
 }
