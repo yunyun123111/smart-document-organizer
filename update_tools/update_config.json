@@ -1,0 +1,9 @@
+﻿{
+  "provider": "github",
+  "repo": "yunyun123111/smart-document-organizer",
+  "branch": "releases",
+  "mirror": "https://ghfast.top",
+  "source": "",
+  "port": 8000,
+  "python": ""
+}
