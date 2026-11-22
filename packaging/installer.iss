@@ -28,7 +28,8 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
-RestartApplications=no
+; 升级时安装器会关闭占用文件的程序，装完自动拉起新版本
+RestartApplications=yes
 ; 数据在 %APPDATA%，卸载不删除
 
 [Languages]
@@ -46,7 +47,8 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; 不加 skipifsilent：设置页「立即更新」用静默安装，装完要自动打开新版本
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall
 
 [Code]
 function WebView2Installed(): Boolean;
