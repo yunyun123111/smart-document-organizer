@@ -1,0 +1,19 @@
+{
+  "package": "vision",
+  "version": "20261122.141156",
+  "built_at": "2026-11-22 14:11:56",
+  "file": "vision.zip",
+  "size": 54587540,
+  "sha256": "2b13d46bcd4105a385aefb14ee970c6bceb9662b186478d26f5fe55432089b75",
+  "contains": [
+    "cv2",
+    "numpy",
+    "numpy.libs",
+    "rapidocr_onnxruntime",
+    "onnxruntime",
+    "pyclipper",
+    "shapely",
+    "shapely.libs",
+    "six.py"
+  ]
+}
