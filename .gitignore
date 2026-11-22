@@ -36,3 +36,6 @@ Thumbs.db
 
 # ===== 便携包构建产物 =====
 build_portable/
+
+# 每次发布会重新生成的离线包
+release/
