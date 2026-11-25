@@ -225,9 +225,10 @@ def seed_default_filename_rules(db: Session) -> int:
     return created
 
 # 分类默认重命名模板（模糊文件识别后按此格式命名）
+# 公司简称 + 紧凑日期在前，便于按客户/时间排序；结算与货权转移多保留船名
 DEFAULT_RENAME_TEMPLATES: dict[str, str] = {
-    "合同/结算单": "{日期}_{船名}_{合同号}_{物料}_{类型}",
-    "合同/货权转移": "{日期}_{船名}_{合同号}_{物料}_{类型}",
+    "合同/结算单": "{公司:short}_{日期:compact}_{船名}_{编号}",
+    "合同/货权转移": "{公司:short}_{日期:compact}_{船名}_{编号}",
 }
 
 

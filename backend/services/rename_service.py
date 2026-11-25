@@ -49,8 +49,8 @@ VARIABLE_ALIASES: dict[str, list[str]] = {
 # 兼容保留（部分外部引用）；新 DSL 渲染默认缺失跳过，不再填充该占位
 MISSING = "未识别"
 
-# 默认模板（规格书第五十一节）
-DEFAULT_TEMPLATE = "{日期}_{类型}_{公司}_{编号}"
+# 默认模板：公司简称在前、日期紧凑、编号结尾（如 青岛中资钢联_20261125_HSYCXS-0324.pdf）
+DEFAULT_TEMPLATE = "{公司:short}_{日期:compact}_{编号}"
 
 # 公司名缩写：去掉常见后缀
 _COMPANY_SUFFIX_RE = re.compile(
